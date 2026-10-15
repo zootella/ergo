@@ -242,7 +242,7 @@ VitePress pulls them in with its built-in snippet import: a line like `<<< ../go
 
 Semantic versioning in all four. Start at 0.1.0; the zero major tells users the API may still move. The version lives in package.json, pyproject.toml, and Cargo.toml, and for Go only in the git tag. Keeping all four at the same number for the same release is a choice worth making, since the point of ergo is that the four editions are the same thing.
 
-npm, PyPI, and crates.io all support trusted publishing from GitHub Actions through OIDC, which means no long-lived tokens anywhere. Go needs nothing but the tag.
+npm, PyPI, and crates.io all support trusted publishing from GitHub Actions through OIDC, which means no long-lived tokens anywhere, and that's how ergo releases: `.github/workflows/publish.yml` runs on a pushed tag like `v0.1.1`, runs the whole test workflow first, checks that the tag's version matches all three manifests, and publishes to each registry that doesn't already have that version. Each registry was told once, on its own site, to trust that workflow file in zootella/ergo under the environment named `publish`. Go needs nothing but its own tag, `go/v0.1.1`, pushed by hand; the workflow asks the proxy to fetch it if the tag is there, and says so if it isn't. A release is therefore: set the version in package.json, pyproject.toml, and Cargo.toml, commit, push the two tags.
 
 ## Open
 

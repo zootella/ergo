@@ -1,0 +1,72 @@
+# publish a release to every ecosystem when a version tag like v0.1.1 is pushed: npm, PyPI, and crates.io through trusted publishing, which proves this is the repository's own workflow and needs no stored token, and the go module through its own tag, go/v0.1.1, pushed by hand
+# each registry step first asks whether the version is already there and skips if so, so a rerun after a partial failure is safe, and so is a first run on a version that was published by hand
+name: publish
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: publish # the environment name each registry's trusted publisher is told; protection rules for it can be added in the repository's settings
+    permissions:
+      id-token: write # lets the job prove to each registry that it is this repository's workflow
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: the version is the tag's, and every manifest agrees
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          test "$(node -p "require('./javascript/package.json').version")" = "$version"
+          grep -q "^version = \"$version\"" python/pyproject.toml
+          grep -q "^version = \"$version\"" rust/Cargo.toml
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: npm
+        working-directory: javascript
+        run: |
+          npm install -g npm@latest # trusted publishing needs npm 11.5 or later, newer than the one node 22 ships
+          if npm view "@zootella/ergo@$VERSION" version >/dev/null 2>&1; then
+            echo "already on npm"
+          else
+            npm publish --access public
+          fi
+
+      - uses: astral-sh/setup-uv@v6
+      - name: pypi
+        working-directory: python
+        run: |
+          uv build
+          uv publish --trusted-publishing always --check-url https://pypi.org/simple/ # check-url skips files already there
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: crates
+      - name: crates.io
+        working-directory: rust
+        run: |
+          if curl -sf -A "zootella/ergo publish workflow" "https://crates.io/api/v1/crates/zootella-ergo/$VERSION" >/dev/null; then
+            echo "already on crates.io"
+          else
+            cargo publish --token "${{ steps.crates.outputs.token }}"
+          fi
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: go
+        run: |
+          if git ls-remote --tags origin "go/v$VERSION" | grep -q .; then
+            GOPROXY=https://proxy.golang.org go list -m "github.com/zootella/ergo/go@v$VERSION" # the proxy fetches the module on first request, which makes it available
+          else
+            echo "::notice::push the tag go/v$VERSION to release the go module"
+          fi

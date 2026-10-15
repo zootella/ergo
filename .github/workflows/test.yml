@@ -4,6 +4,7 @@ name: test
 on:
   push:
   pull_request:
+  workflow_call: # so the publish workflow runs this whole suite before it publishes anything
 
 jobs:
   test:
