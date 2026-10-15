@@ -1,0 +1,16 @@
+[
+  {"function": "tagLength", "input": [], "output": 21, "note": "nanoid's default: long enough to be unique, short enough to be reasonable"},
+  {"function": "hasTag", "input": ["AgKxru95C7jFp5iPuK9O7"], "output": true, "note": "exactly 21 letters and numerals"},
+  {"function": "hasTag", "input": ["21j3i1DJMw6JPkxYgTt1B"], "output": true, "note": "another one"},
+  {"function": "hasTag", "input": ["AgKxru95C7jFp5iPuK9O7b"], "output": false, "note": "too long"},
+  {"function": "hasTag", "input": ["AgKxru95C7jFp5iPuK9O"], "output": false, "note": "too short"},
+  {"function": "hasTag", "input": ["AgKxru95C7jFp5iPuK9_7"], "output": false, "note": "an underscore is not a letter or numeral"},
+  {"function": "hasTag", "input": ["AgKxru95C7jFp5iPuK9-7"], "output": false, "note": "neither is a hyphen; both are left out of the alphabet so a double-click selects a whole tag"},
+  {"function": "hasTag", "input": [""], "output": false, "note": "blank"},
+  {"function": "hasTag", "input": ["AgKxru95C7jFp5iPuK9O "], "output": false, "note": "a trailing space"},
+  {"function": "hasTag", "input": ["AgKxru95C7jFp5iPuK9O\n"], "output": false, "note": "a trailing newline; python's $ anchor would accept this, which is why the python edition uses fullmatch"},
+  {"function": "hasTag", "input": ["AgKxru95C7jFp5iPuK9é"], "output": false, "note": "an accented letter; the alphabet is ascii, and this is 21 bytes but not 21 letters"},
+  {"function": "checkTag", "input": ["AgKxru95C7jFp5iPuK9O7"], "output": "AgKxru95C7jFp5iPuK9O7", "note": "returns the tag, so a call can pass a valid tag through"},
+  {"function": "checkTag", "input": ["not a tag"], "throws": true, "note": "a guard: an invalid tag is a bug in the caller, and the edition fails loudly in its own way"},
+  {"function": "checkTag", "input": [""], "throws": true, "note": "blank is not a tag either"}
+]

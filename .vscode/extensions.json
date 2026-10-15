@@ -1,0 +1,10 @@
+{
+  "recommendations": [
+    "esbenp.prettier-vscode",
+    "dbaeumer.vscode-eslint",
+    "charliermarsh.ruff",
+    "rust-lang.rust-analyzer",
+    "golang.go",
+    "editorconfig.editorconfig"
+  ]
+}

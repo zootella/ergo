@@ -1,0 +1,45 @@
+{
+  "name": "@zootella/ergo",
+  "version": "0.1.0",
+  "description": "Simple, dependency-free helper functions, the same in JavaScript, Python, Rust, and Go.",
+  "type": "module",
+  "exports": {
+    ".": "./ergo.js"
+  },
+  "files": [
+    "ergo.js"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.29.3",
+  "scripts": {
+    "test": "vitest run",
+    "fuzz": "vitest run -t fuzz --silent=false",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write ."
+  },
+  "homepage": "https://zootella.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zootella/ergo.git",
+    "directory": "javascript"
+  },
+  "keywords": [
+    "helpers",
+    "size",
+    "time",
+    "constants",
+    "isomorphic"
+  ],
+  "author": "zootella",
+  "license": "MIT",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.12.0",
+    "globals": "^16.0.0",
+    "prettier": "^3.9.9",
+    "vitest": "^5.0.3"
+  }
+}

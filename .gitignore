@@ -1,0 +1,182 @@
+# ============================================================================
+# .gitignore for ergo
+# Four editions in one repository: javascript, python, rust, and go, with the shared vectors and a VitePress site beside them
+# One file at the root covers everything; there are no nested ignore files
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Operating systems
+# ----------------------------------------------------------------------------
+
+# macOS
+.DS_Store
+._*
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Linux, and Emacs backup files
+*~
+.directory
+
+# ----------------------------------------------------------------------------
+# JavaScript (the javascript edition and the docs site, both on npm)
+# ----------------------------------------------------------------------------
+
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# the tarball npm pack writes beside package.json
+*.tgz
+
+# Build output
+dist/
+# a build can leave a `dist` symlink beside the real output; the slash above only matches dirs
+dist
+build/
+out/
+.cache/
+
+# Local overrides (Vite convention)
+*.local
+
+# Vite, which vitest and VitePress both run on, leaves these while loading a config
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Testing
+coverage/
+
+# Lock files: pnpm-lock.yaml IS committed, in javascript/ and in docs/.
+# package-lock.json and yarn.lock should not exist here, since ergo uses pnpm.
+package-lock.json
+yarn.lock
+
+# ----------------------------------------------------------------------------
+# VitePress (docs/)
+# ----------------------------------------------------------------------------
+
+# dist is covered above, but name it here too, so that editing another
+# section can never quietly unignore a build output
+**/.vitepress/cache/
+**/.vitepress/dist/
+
+# ----------------------------------------------------------------------------
+# Python (the python edition, on uv)
+# ----------------------------------------------------------------------------
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+
+# Distribution and packaging: what uv build writes, and what an editable install leaves
+*.egg-info/
+*.egg
+*.whl
+
+# Testing and coverage
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# Linters and checkers
+.ruff_cache/
+.mypy_cache/
+
+# A local interpreter pin; pyproject.toml's requires-python is the contract
+.python-version
+
+# uv.lock IS committed, like the other lock files
+
+# ----------------------------------------------------------------------------
+# Rust (the rust edition, on cargo)
+# ----------------------------------------------------------------------------
+
+target/
+**/*.rs.bk
+
+# Cargo.lock IS committed. The guidance changed in 2023 to keep a library's lockfile too,
+# and crates.io packages carry it; deleting it to fix a problem is never the fix.
+
+# ----------------------------------------------------------------------------
+# Go (the go edition, a module in go/)
+# ----------------------------------------------------------------------------
+
+# compiled test binaries and coverage profiles
+*.test
+coverage.out
+
+# a go.work file is a local arrangement, like a path dependency, and never part of the module
+go.work
+go.work.sum
+
+# ergo has no go dependencies, so no vendor directory should ever appear; named so one never gets in
+vendor/
+
+# ----------------------------------------------------------------------------
+# Private planning and notes
+# ----------------------------------------------------------------------------
+
+# "hide" as a dot-separated part of a file or folder name stays out of the public repository, so an idea can live in the tree before it is adopted, and the name carries its own reason for being hidden rather than needing a rule of its own
+hide
+hide.*
+*.hide
+*.hide.*
+
+# ----------------------------------------------------------------------------
+# IDEs and editors
+# ----------------------------------------------------------------------------
+
+# VS Code: the two files that set format on save and recommend the formatters are committed; nothing else it writes is
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+.vs/
+.idea/
+.fleet/
+*.iml
+*.swp
+*.swo
+
+# Claude Code writes a session resume and per-machine settings here; anything else
+# under .claude is shared configuration and can be committed
+.claude/RESUME.md
+.claude/settings.local.json
+
+# ----------------------------------------------------------------------------
+# Secrets, kept because these are the patterns that would otherwise commit one
+# some day: a registry token for npm, PyPI, or crates.io in an environment file
+# ----------------------------------------------------------------------------
+
+.env
+.env.*
+*.env
+*.vars
+*.pem
+*.key
+*.cert
+*.p12
+
+# ----------------------------------------------------------------------------
+# Logs, diffs, and temporary files
+# ----------------------------------------------------------------------------
+
+logs/
+*.log
+*.diff
+diff*.txt
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig

@@ -1,0 +1,29 @@
+/* the brand color is css burlywood, #deb887, in a surrounding palette of warm tones; ideas.md has the direction, and this is a first pass */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+  --vp-font-family-base: 'IBM Plex Sans', sans-serif;
+  --vp-font-family-mono: 'IBM Plex Mono', monospace;
+
+  --vp-c-brand-1: #9c6a3c; /* dark enough to read as link text on the light background */
+  --vp-c-brand-2: #b8865b;
+  --vp-c-brand-3: #deb887; /* burlywood itself, for buttons and solid accents */
+  --vp-c-brand-soft: rgba(222, 184, 135, 0.18);
+
+  --vp-c-bg: #fdfaf5;
+  --vp-c-bg-alt: #f6efe4;
+  --vp-c-bg-soft: #f6efe4;
+  --vp-c-bg-elv: #fdfaf5;
+}
+
+.dark {
+  --vp-c-brand-1: #deb887; /* burlywood reads well as text on the dark background */
+  --vp-c-brand-2: #e8cba3;
+  --vp-c-brand-3: #c9a26f;
+  --vp-c-brand-soft: rgba(222, 184, 135, 0.14);
+
+  --vp-c-bg: #231e1a;
+  --vp-c-bg-alt: #1b1714;
+  --vp-c-bg-soft: #2d2621;
+  --vp-c-bg-elv: #2d2621;
+}

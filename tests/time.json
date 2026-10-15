@@ -1,0 +1,10 @@
+[
+  {"function": "Time.millisecond", "input": [], "output": 1, "note": "the unit of a tick, which counts milliseconds since 1970"},
+  {"function": "Time.second", "input": [], "output": 1000, "note": "a thousand of those"},
+  {"function": "Time.minute", "input": [], "output": 60000, "note": "sixty seconds"},
+  {"function": "Time.hour", "input": [], "output": 3600000, "note": "sixty minutes"},
+  {"function": "Time.day", "input": [], "output": 86400000, "note": "twenty-four hours"},
+  {"function": "Time.week", "input": [], "output": 604800000, "note": "seven days"},
+  {"function": "Time.year", "input": [], "output": 31557600000, "note": "365 and a quarter days, the average over the leap cycle, which is exact in milliseconds"},
+  {"function": "Time.month", "input": [], "output": 2629800000, "note": "a twelfth of that year, also exact"}
+]

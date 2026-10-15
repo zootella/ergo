@@ -1,0 +1,59 @@
+# every edition runs its own tests with its own tool, then the javascript suite drives all four editions together
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: javascript/pnpm-lock.yaml
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: astral-sh/setup-uv@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: go
+        working-directory: go
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+
+      - name: rust
+        working-directory: rust
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets --features driver -- -D warnings
+          cargo test
+
+      - name: python
+        working-directory: python
+        run: |
+          uv sync
+          uv run ruff format --check .
+          uv run ruff check .
+          uv run pytest
+
+      - name: javascript, and every edition together
+        working-directory: javascript
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm lint
+          pnpm test
