@@ -1,6 +1,6 @@
 {
   "name": "@zootella/ergo",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Simple, dependency-free helper functions, the same in JavaScript, Python, Rust, and Go.",
   "type": "module",
   "exports": {
