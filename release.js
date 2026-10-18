@@ -76,6 +76,7 @@ async function main() {
     'publishing failed; once the trouble is fixed, rerun the failed jobs on this page, and each step will skip what it already did',
   )
   console.log(`released https://github.com/zootella/ergo/releases/tag/${tag}`)
+  console.log('npm can take a few minutes to list a new version') //npm processes each one before serving it, which took six minutes for 0.1.2
 }
 
 //the version all five files hold; a release starts from their agreement, since the last one left them so, and checks it again after writing the next
