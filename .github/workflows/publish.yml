@@ -1,5 +1,6 @@
-# publish a release to every ecosystem when a version tag like v0.1.1 is pushed: npm, PyPI, and crates.io through trusted publishing, which proves this is the repository's own workflow and needs no stored token, and the go module through its own tag, go/v0.1.1, pushed by hand
-# each registry step first asks whether the version is already there and skips if so, so a rerun after a partial failure is safe, and so is a first run on a version that was published by hand
+# publish a release to every ecosystem when a version tag like v0.1.1 is pushed, which release.js at the root does: the whole test workflow first, then npm, PyPI, and crates.io through trusted publishing, which proves this is the repository's own workflow and needs no stored token, then the go module through its own tag, go/v0.1.1, and last a GitHub release that links all four
+# each step first asks whether its part is already done and skips if so, so rerunning a failed job is safe, and so is a first run on a version that was published by hand
+# each registry trusts this file by its name, publish.yml, and the environment by its name, publish; renaming either means telling npm, PyPI, and crates.io again, on their sites
 name: publish
 
 on:
@@ -13,12 +14,14 @@ jobs:
   publish:
     needs: test
     runs-on: ubuntu-latest
-    environment: publish # the environment name each registry's trusted publisher is told; protection rules for it can be added in the repository's settings
+    environment: publish # protection rules for it can be added in the repository's settings
     permissions:
       id-token: write # lets the job prove to each registry that it is this repository's workflow
-      contents: read
+      contents: write # lets the job push the go module's tag and make the release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the whole history and every tag, so the release can list what changed since the last one
 
       - name: the version is the tag's, and every manifest agrees
         run: |
@@ -28,7 +31,7 @@ jobs:
           grep -q "^version = \"$version\"" python/pyproject.toml
           grep -q "^version = \"$version\"" rust/Cargo.toml
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: npm
@@ -41,7 +44,7 @@ jobs:
             npm publish --access public
           fi
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.3.0 # setup-uv publishes exact versions only, with no tag that follows a major
       - name: pypi
         working-directory: python
         run: |
@@ -60,13 +63,41 @@ jobs:
             cargo publish --token "${{ steps.crates.outputs.token }}"
           fi
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
+          cache: false # the go module has no dependencies, so there's no go.sum to key a cache on and nothing to cache
       - name: go
         run: |
-          if git ls-remote --tags origin "go/v$VERSION" | grep -q .; then
-            GOPROXY=https://proxy.golang.org go list -m "github.com/zootella/ergo/go@v$VERSION" # the proxy fetches the module on first request, which makes it available
+          if git ls-remote --exit-code --tags origin "refs/tags/go/v$VERSION" >/dev/null; then
+            echo "already tagged go/v$VERSION"
           else
-            echo "::notice::push the tag go/v$VERSION to release the go module"
+            git tag "go/v$VERSION" # on the commit this run checked out, the one tagged v$VERSION
+            git push origin "go/v$VERSION" # a tag pushed with the workflow's own token starts no other workflow
+          fi
+          GOPROXY=https://proxy.golang.org go list -m "github.com/zootella/ergo/go@v$VERSION" # the proxy fetches the module on first request, which makes it available
+
+      - name: github release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "already released"
+          else
+            previous=$(git describe --tags --abbrev=0 --match 'v*' HEAD^) # the last release's tag, which a go/ tag never matches
+            {
+              echo "Changes since $previous:"
+              echo
+              git log --reverse --format='- %s' --invert-grep --grep="^ergo $VERSION\$" "$previous..HEAD" # every commit but the one that set the version
+              echo
+              echo "On each registry:"
+              echo
+              echo "- JavaScript, [@zootella/ergo on npm](https://www.npmjs.com/package/@zootella/ergo/v/$VERSION)"
+              echo "- Python, [zootella-ergo on PyPI](https://pypi.org/project/zootella-ergo/$VERSION/)"
+              echo "- Rust, [zootella-ergo on crates.io](https://crates.io/crates/zootella-ergo/$VERSION)"
+              echo "- Go, [github.com/zootella/ergo/go on pkg.go.dev](https://pkg.go.dev/github.com/zootella/ergo/go@v$VERSION)"
+              echo
+              echo "**Full Changelog**: https://github.com/zootella/ergo/compare/$previous...v$VERSION"
+            } > "$RUNNER_TEMP/notes.md"
+            gh release create "v$VERSION" --verify-tag --title "ergo $VERSION" --notes-file "$RUNNER_TEMP/notes.md"
           fi

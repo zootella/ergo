@@ -3,6 +3,7 @@ name: test
 
 on:
   push:
+    branches: ['**'] # every branch and no tag, since the publish workflow runs this whole suite itself on the tag it publishes
   pull_request:
   workflow_call: # so the publish workflow runs this whole suite before it publishes anything
 
@@ -10,25 +11,26 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: javascript/pnpm-lock.yaml
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.14'
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.3.0 # setup-uv publishes exact versions only, with no tag that follows a major
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
+          cache: false # the go module has no dependencies, so there's no go.sum to key a cache on and nothing to cache
 
       - name: go
         working-directory: go
@@ -57,4 +59,5 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm lint
+          pnpm exec prettier --check ../release.js # release.js belongs to no edition, and the configuration at the root formats it the same way
           pnpm test

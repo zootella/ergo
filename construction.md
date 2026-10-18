@@ -50,8 +50,10 @@ One repository, github.com/zootella/ergo, holding all four editions:
 ```
 ergo/
 	CLAUDE.md  concept.md  construction.md  ideas.md  style.md  README.md  LICENSE
+	release.js  package.json       one command that releases all four editions at a new version, run as pnpm release
 	.editorconfig  .vscode/        indentation per language, format on save, recommended extensions
-	.github/workflows/             test.yml runs all four editions and the suite; docs.yml deploys the site
+	.prettierrc                    the Prettier configuration, for the JavaScript edition, release.js, and the site
+	.github/workflows/             test.yml runs all four editions and the suite; publish.yml releases on a version tag; docs.yml deploys the site
 	tests/                         the shared json vectors, one file per function family, belonging to no edition
 	javascript/                    package.json, ergo.js, driver.js, editions.js, ergo.test.js (the vitest suite that drives all four)
 	python/                        pyproject.toml, src/zootella/ergo/__init__.py and driver.py, tests/test_vectors.py
@@ -162,7 +164,7 @@ The tool is pnpm, which develops most of the large libraries on npm, including V
 
 Local development: `pnpm link ../../ergo/javascript` in a consuming project, or a `link:` spec in its package.json, so the working tree is used directly. Before publishing, `pnpm pack --dry-run` lists exactly what will ship.
 
-Shipping: `pnpm publish --access public`; scoped packages default to private, so the flag is required. The version is edited in package.json by hand, since a release bumps all four manifests together. From GitHub Actions, npm's provenance attestation and trusted publishing through GitHub's OIDC remove the need for a stored token, and can come later.
+Shipping: `npm publish --access public`, from the publish workflow; scoped packages default to private, so the flag is required. Trusted publishing through GitHub's OIDC removes the need for a stored token. release.js sets the version here along with the other editions', as described under Versions and releases.
 
 ## Python, on PyPI
 
@@ -240,11 +242,12 @@ VitePress pulls them in with its built-in snippet import: a line like `<<< ../go
 
 ## Versions and releases
 
-Semantic versioning in all four. Start at 0.1.0; the zero major tells users the API may still move. The version lives in package.json, pyproject.toml, and Cargo.toml, and for Go only in the git tag. Keeping all four at the same number for the same release is a choice worth making, since the point of ergo is that the four editions are the same thing.
+Semantic versioning in all four. Start at 0.1.0; the zero major tells users the API may still move. While it's zero, a release that only adds bumps the patch, and one that changes an answer ergo already gave bumps the minor, so a consumer that asks for `^0.1.0` in package.json or `"0.1"` in Cargo.toml takes every addition and never a changed answer. The version lives in package.json, pyproject.toml, and Cargo.toml, and in the two lockfiles that record the project's own version beside its dependencies, uv.lock and Cargo.lock; for Go it lives only in the git tag. All four editions carry the same number for the same release, since the point of ergo is that the four editions are the same thing.
 
-npm, PyPI, and crates.io all support trusted publishing from GitHub Actions through OIDC, which means no long-lived tokens anywhere, and that's how ergo releases: `.github/workflows/publish.yml` runs on a pushed tag like `v0.1.1`, runs the whole test workflow first, checks that the tag's version matches all three manifests, and publishes to each registry that doesn't already have that version. Each registry was told once, on its own site, to trust that workflow file in zootella/ergo under the environment named `publish`. Go needs nothing but its own tag, `go/v0.1.1`, pushed by hand; the workflow asks the proxy to fetch it if the tag is there, and says so if it isn't. A release is therefore: set the version in package.json, pyproject.toml, and Cargo.toml, commit, push the two tags.
+A release is one command at the root: `pnpm release patch`, or `minor`, or an exact version like `0.3.0`, which runs release.js. It checks that main is clean and up to date, pushes it if GitHub hasn't seen it, and waits for GitHub's tests to pass on it, then sets the version in the five files the way each ecosystem writes it, commits that as `ergo 0.1.1`, and pushes the commit together with the tag `v0.1.1`. The tag starts `.github/workflows/publish.yml`, which runs the whole test workflow on the tagged commit, checks that the tag's version matches the three manifests, and publishes to npm, PyPI, and crates.io by trusted publishing through GitHub's OIDC, so there are no long-lived tokens anywhere. It then pushes the Go module's tag, `go/v0.1.1`, on the same commit and asks the Go proxy to fetch it, so Go, like the other three, ships only after the tests pass; a tag pushed with the workflow's own token starts no other workflow. Last, it makes a GitHub release that lists the commits since the previous one and links the version on all four registries. release.js watches the run and ends with the release's address, a couple of minutes after it started. Every step of the workflow first asks whether its part is already done, so a run that fails partway is finished by rerunning it.
+
+Each registry was told once, on its own site, to trust that workflow file in zootella/ergo under the environment named `publish`, so the file and the environment keep those names. release.js lives at the root because a release belongs to no one edition, and it imports only Node's own modules. The root's package.json is private, depends on nothing, and holds only the script that names the command; the verb is `release` rather than `patch` because `pnpm patch` is a command of pnpm's own, which pnpm runs ahead of any script. It's formatted by the same Prettier configuration as the JavaScript edition, which sits at the root for that reason, and CI checks it.
 
 ## Open
 
 - Bytes in the vector files and the driver protocol, and handles for objects, as described under Tests. Both arrive with the first function that needs them.
-- Action versions in the two workflows are from memory and should be checked against the current releases when the repository exists.

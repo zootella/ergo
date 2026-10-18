@@ -32,3 +32,14 @@ cd python && ERGO_FUZZ=4 uv run pytest -s -k fuzz
 cd rust && ERGO_FUZZ=4 cargo test --release --test fuzz -- --nocapture
 cd go && ERGO_FUZZ=4 go test -run Fuzz -v
 ```
+
+## Releasing
+
+One command releases all four editions at a new version, from a clean main:
+
+```
+pnpm release patch    # 0.1.0 to 0.1.1, for a release that adds
+pnpm release minor    # 0.1.0 to 0.2.0, for one that changes an existing answer
+```
+
+It waits for GitHub's tests to pass on main, sets the version in every manifest, commits and tags it, and pushes. GitHub tests the tag again and publishes to npm, PyPI, crates.io, and the Go proxy, and the command watches until the GitHub release is up. It needs `gh` logged in. `construction.md` has the details.

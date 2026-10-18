@@ -1,0 +1,8 @@
+{
+  "name": "ergo-repository",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "release": "node release.js"
+  }
+}
