@@ -16,7 +16,7 @@
 # endregion time
 
 # region tick
->>> from zootella.ergo import tick_to_text, text_to_tick, tick_to_iso, iso_to_tick
+>>> from zootella.ergo import tick_to_text, text_to_tick, tick_to_iso, iso_to_tick, has_tick
 >>> t = 1344230277300  # a tick: milliseconds since 1970; this one is the Curiosity landing
 >>> tick_to_text(t)  # as short as the moment allows
 '2012aug6.0517.57300'
@@ -24,6 +24,8 @@
 '2012-08-06T05:17:57.300Z'
 >>> text_to_tick("2012aug6.0517.57300") == t == iso_to_tick("2012-08-06T05:17:57.300Z")  # each form reads back exactly
 True
+>>> has_tick(-1)  # ask about a number from outside, like a clock or a file's modified time, before handing it to a function that takes a tick
+False
 
 # endregion tick
 
@@ -97,6 +99,8 @@ class Time:
 # A tick is an integer count of milliseconds since the start of 1970, and ergo keeps every tick between zero and the last millisecond of 9999. Two text forms carry a tick exactly. The iso form is like "2012-08-06T05:17:57.300Z": always 24 characters, always milliseconds, always Z. The short form is like "2012aug6.0517.57300": the year, month, and day, then a dot and the clock, then a dot and the milliseconds into the minute, written only as deep as the moment needs, so the start of 1990 is just "1990" and the longest text is 20 characters.
 #
 # Each form reads back to exactly the tick that wrote it, and reads nothing else. A reader accepts the text its writer produces and refuses everything else, from a missing millisecond digit to "1990feb1" where the writer would say "1990feb". The last check in each reader is the round trip itself: parse the text, write the tick, and require the same text. That's what keeps every text one to one with its tick.
+#
+# Every function that takes a tick raises on a number that isn't one, because a caller handing it one has a bug. A number from outside, like a system clock or a file's modified time, isn't the caller's to vouch for, so has_tick asks about it first, and asking never raises; once has_tick says yes, nothing here raises on that tick. check_tick is the guard that enforces the same answer, and it's the gate every function here goes through.
 
 _last_tick = 253402300799999  # the last millisecond of 9999, which keeps a year at four digits in every edition
 _epoch = datetime(1970, 1, 1, tzinfo=UTC)  # tick zero
@@ -120,13 +124,23 @@ _iso_pattern = re.compile(
 _numerals_pattern = re.compile(r"[0-9]+")
 
 
+def has_tick(t: object) -> bool:
+    """True if t is a tick, an integer from zero through the last millisecond of 9999; never raises, so a number from outside can be asked about first."""
+    # a bool is an int in python, and never a tick
+    return isinstance(t, int) and not isinstance(t, bool) and 0 <= t <= _last_tick
+
+
+def check_tick(t: int) -> int:
+    """A guard: pass a tick through, or raise because the caller handed us something that isn't one."""
+    if not has_tick(t):
+        raise ValueError(f"not a tick: {t!r}")
+    return t
+
+
 def _split_tick(t: int) -> datetime:
     """The utc moment a tick names, or raise because the caller handed us something that isn't a tick."""
-    if not isinstance(t, int) or t < 0 or t > _last_tick:
-        raise ValueError(f"not a tick: {t!r}")
-    return _epoch + timedelta(
-        milliseconds=t
-    )  # exact, since timedelta keeps whole milliseconds as integers
+    # exact, since timedelta keeps whole milliseconds as integers
+    return _epoch + timedelta(milliseconds=check_tick(t))
 
 
 def _join_tick(y: int, m: int, d: int, h: int, i: int, ms: int) -> int | None:

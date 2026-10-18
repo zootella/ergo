@@ -35,11 +35,26 @@ cd go && ERGO_FUZZ=4 go test -run Fuzz -v
 
 ## Releasing
 
-One command releases all four editions at a new version, from a clean main:
+Most commits don't need a release. Release when there's finished work you want other projects to be able to install: commit as usual, then run one command from the repository root, on main.
 
 ```
-pnpm release patch    # 0.1.0 to 0.1.1, for a release that adds
-pnpm release minor    # 0.1.0 to 0.2.0, for one that changes an existing answer
+git add .
+git commit -m "message"
+pnpm release patch    # 0.1.0 to 0.1.1, for a release that only adds, like a new function
+pnpm release minor    # 0.1.0 to 0.2.0, for one that changes an answer an existing function already gave
 ```
 
-It waits for GitHub's tests to pass on main, sets the version in every manifest, commits and tags it, and pushes. GitHub tests the tag again and publishes to npm, PyPI, crates.io, and the Go proxy, and the command watches until the GitHub release is up. It needs `gh` logged in. `construction.md` has the details.
+Choose the word by what changed. While the major version is zero, a project that asks for `^0.1.0` in package.json or `"0.1"` in Cargo.toml takes every patch automatically and a minor only when it opts in, so a changed answer never reaches anyone unasked. `pnpm release 1.0.0` names a version exactly.
+
+The command does the rest. It refuses to start with uncommitted changes, pushes main if GitHub hasn't seen it, and waits for GitHub's tests to pass on it. Then it reads the current version from the five files that hold it, works out the next one, and writes it the way each ecosystem does: `npm version` for package.json, `uv version` for pyproject.toml and uv.lock, and Cargo.toml's version line with `cargo update` for Cargo.lock. It commits that as `ergo 0.1.1`, tags the commit `v0.1.1`, and pushes both. The tag starts the publish workflow on GitHub, which tests the tagged commit again, publishes to npm, PyPI, and crates.io, and tags `go/v0.1.1` for the Go module, whose version lives only in that tag. The command watches the run and ends with the address of the GitHub release, which links the new version on all four registries. No version is ever edited by hand, and there's nothing to pull afterward.
+
+Each release reaches four places, one for each edition's ecosystem:
+
+- **JavaScript**, [@zootella/ergo on npm](https://www.npmjs.com/package/@zootella/ergo), published from `javascript/` with `npm publish`.
+- **Python**, [zootella-ergo on PyPI](https://pypi.org/project/zootella-ergo/), built with `uv build` and uploaded with `uv publish`.
+- **Rust**, [zootella-ergo on crates.io](https://crates.io/crates/zootella-ergo), published with `cargo publish`, after which [docs.rs](https://docs.rs/zootella-ergo) builds the crate's reference pages on its own.
+- **Go**, [github.com/zootella/ergo/go on pkg.go.dev](https://pkg.go.dev/github.com/zootella/ergo/go). Go has no registry to upload to: the `go/v0.1.1` tag in this repository is the release, the workflow asks [proxy.golang.org](https://proxy.golang.org) to fetch it, and pkg.go.dev shows it from there.
+
+Every version also gets a page under this repository's [releases](https://github.com/zootella/ergo/releases), listing the commits since the last one.
+
+It needs `gh` logged in. `construction.md` has the details.

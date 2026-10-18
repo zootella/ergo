@@ -74,6 +74,8 @@ pub mod time {
 //
 // Each form reads back to exactly the tick that wrote it, and reads nothing else. A reader accepts the text its writer produces and refuses everything else, from a missing millisecond digit to "1990feb1" where the writer would say "1990feb". The last check in each reader is the round trip itself: parse the text, write the tick, and require the same text. That's what keeps every text one to one with its tick.
 //
+// Every function that takes a tick panics on a number that isn't one, because a caller handing it one has a bug. A number from outside, like a system clock or a file's modified time, isn't the caller's to vouch for, so has_tick asks about it first, and asking never panics; once has_tick says yes, nothing here panics on that tick. check_tick is the guard that enforces the same answer, and it's the gate every function here goes through. This matters more in Rust than in the languages that throw: a panic can't be caught the way an exception can, and one that starts inside a panic hook ends the process.
+//
 // The standard library has no calendar, only SystemTime, so the few lines of arithmetic between a count of days and a year, month, and day are here, and the shared vectors and the fuzz test pin them against the other three editions' platforms.
 
 /// The last millisecond of 9999, which keeps a year at four digits in every edition.
@@ -104,13 +106,33 @@ struct Parts {
     ms: u32,
 }
 
+/// True if `t` is a tick, zero through the last millisecond of 9999. Never panics, so a number from outside, like a clock or a file's modified time, can be asked about before it's handed to a function that takes a tick.
+///
+/// ```
+/// assert!(zootella_ergo::has_tick(1_344_230_277_300));
+/// assert!(!zootella_ergo::has_tick(-1));
+/// ```
+pub fn has_tick(t: i64) -> bool {
+    (0..=LAST_TICK).contains(&t)
+}
+
+/// A guard: pass a tick through, or panic because the caller handed us something that isn't one.
+///
+/// # Panics
+///
+/// Panics if `t` isn't a tick, which is a bug in the caller, not an ordinary answer to handle. Ask [`has_tick`] first about a number from outside.
+pub fn check_tick(t: i64) -> i64 {
+    assert!(has_tick(t), "not a tick: {t}");
+    t
+}
+
 /// Split a tick into its utc parts.
 ///
 /// # Panics
 ///
 /// Panics if `t` isn't a tick, which is a bug in the caller: a tick is zero through the last millisecond of 9999.
 fn split_tick(t: i64) -> Parts {
-    assert!((0..=LAST_TICK).contains(&t), "not a tick: {t}");
+    let t = check_tick(t);
     let rest = (t % time::DAY) as u32; // milliseconds into the day
     let (y, m, d) = civil(t / time::DAY);
     Parts {
@@ -182,7 +204,7 @@ fn numerals(s: &str) -> Option<u32> {
 ///
 /// # Panics
 ///
-/// Panics if `t` isn't a tick, which is a bug in the caller: a tick is zero through the last millisecond of 9999.
+/// Panics if `t` isn't a tick, which is a bug in the caller: a tick is zero through the last millisecond of 9999. Ask [`has_tick`] first about a number from outside.
 pub fn tick_to_iso(t: i64) -> String {
     let p = split_tick(t);
     format!(
@@ -239,7 +261,7 @@ fn parse_iso(s: &str) -> Option<i64> {
 ///
 /// # Panics
 ///
-/// Panics if `t` isn't a tick, which is a bug in the caller: a tick is zero through the last millisecond of 9999.
+/// Panics if `t` isn't a tick, which is a bug in the caller: a tick is zero through the last millisecond of 9999. Ask [`has_tick`] first about a number from outside.
 pub fn tick_to_text(t: i64) -> String {
     let p = split_tick(t);
     let mut depth = 0; // how deep the text must go: the year alone, then the month, day, hour, minute, and millisecond

@@ -7,6 +7,7 @@ import {
   textToTick,
   tickToIso,
   isoToTick,
+  hasTick,
   Tag,
   hasTag,
   checkTag,
@@ -97,10 +98,12 @@ describe('tick', () => {
     let text = tickToText(t) //"2012aug6.0517.57300", as short as the moment allows
     let iso = tickToIso(t) //"2012-08-06T05:17:57.300Z", always 24 characters
     let same = textToTick(text) == t && isoToTick(iso) == t //true: each form reads back to exactly t, and refuses any text its writer wouldn't produce
+    let asked = hasTick(-1) //false: ask about a number from outside, like a clock or a file's modified time, before handing it to a function that takes a tick
     // #endregion tick
     expect(text).toBe('2012aug6.0517.57300')
     expect(iso).toBe('2012-08-06T05:17:57.300Z')
     expect(same).toBe(true)
+    expect(asked).toBe(false)
   })
 })
 

@@ -24,6 +24,8 @@ fn run(call: &str, args: &[Value]) -> Result<Value, String> {
         "Time.week" => Ok(json!(crate::time::WEEK)),
         "Time.year" => Ok(json!(crate::time::YEAR)),
         "Time.month" => Ok(json!(crate::time::MONTH)),
+        "hasTick" => Ok(json!(crate::has_tick(integer(args, 0)?))),
+        "checkTick" => Ok(json!(crate::check_tick(integer(args, 0)?))),
         "tickToText" => Ok(json!(crate::tick_to_text(integer(args, 0)?))),
         "textToTick" => refused(crate::text_to_tick(text(args, 0)?)),
         "tickToIso" => Ok(json!(crate::tick_to_iso(integer(args, 0)?))),

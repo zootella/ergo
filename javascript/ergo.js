@@ -62,6 +62,8 @@ export const Time = /*#__PURE__*/ Object.freeze({
 A tick is an integer count of milliseconds since the start of 1970, the way Date.now() counts, and ergo keeps every tick between zero and the last millisecond of 9999. Two text forms carry a tick exactly. The iso form is what toISOString writes, like "2012-08-06T05:17:57.300Z": always 24 characters, always milliseconds, always Z. The short form is like "2012aug6.0517.57300": the year, month, and day, then a dot and the clock, then a dot and the milliseconds into the minute, written only as deep as the moment needs, so the start of 1990 is just "1990" and the longest text is 20 characters.
 
 Each form reads back to exactly the tick that wrote it, and reads nothing else. A reader accepts the text its writer produces and refuses everything else, from a missing millisecond digit to "1990feb1" where the writer would say "1990feb". The last check in each reader is the round trip itself: parse the text, write the tick, and require the same text. That's what keeps every text one to one with its tick.
+
+Every function that takes a tick throws on a number that isn't one, because a caller handing it one has a bug. A number from outside, like a system clock or a file's modified time, isn't the caller's to vouch for, so hasTick asks about it first, and asking never fails; once hasTick says yes, nothing here throws on that tick. checkTick is the guard that enforces the same answer, and it's the gate every function here goes through.
 */
 
 const lastTick = 253402300799999 //the last millisecond of 9999, which keeps a year at four digits in every edition
@@ -82,10 +84,13 @@ const months = [
 const isoPattern =
   /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})\.([0-9]{3})Z$/ //the one shape of the iso form
 
+//true if t is a tick, an integer from zero through the last millisecond of 9999; never throws, so a number from outside can be asked about first
+export function hasTick(t) {
+  return Number.isSafeInteger(t) && t >= 0 && t <= lastTick
+}
 //a guard: pass a tick through, or throw because the caller handed us something that isn't one
-function _checkTick(t) {
-  if (!Number.isSafeInteger(t) || t < 0 || t > lastTick)
-    throw new Error(`not a tick: ${t}`)
+export function checkTick(t) {
+  if (!hasTick(t)) throw new Error(`not a tick: ${t}`)
   return t
 }
 //true if s is made of numerals 0 through 9 and nothing else
@@ -95,7 +100,7 @@ function _isNumerals(s) {
 
 //write a tick in the iso form, like "2012-08-06T05:17:57.300Z"
 export function tickToIso(t) {
-  return new Date(_checkTick(t)).toISOString() //the platform writes exactly the form we read: a four digit year, milliseconds, and Z
+  return new Date(checkTick(t)).toISOString() //the platform writes exactly the form we read: a four digit year, milliseconds, and Z
 }
 //read the iso form back to its tick, or throw because the text isn't exactly what a tick writes
 export function isoToTick(s) {
@@ -112,7 +117,7 @@ export function isoToTick(s) {
 
 //write a tick in the short form, like "2012aug6.0517.57300", as deep as the moment needs and no deeper
 export function tickToText(t) {
-  let d = new Date(_checkTick(t))
+  let d = new Date(checkTick(t))
   let y = d.getUTCFullYear()
   let m = d.getUTCMonth() + 1 //1 january through 12 december
   let day = d.getUTCDate()

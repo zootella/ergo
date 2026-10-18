@@ -31,8 +31,9 @@ func ExampleTickToText() {
 	text := ergo.TickToText(t)       // "2012aug6.0517.57300", as short as the moment allows
 	iso := ergo.TickToISO(t)         // "2012-08-06T05:17:57.300Z", always 24 characters
 	back, _ := ergo.TextToTick(text) // each form reads back to exactly t, and refuses any text its writer wouldn't produce
-	fmt.Println(text, iso, back == t)
-	// Output: 2012aug6.0517.57300 2012-08-06T05:17:57.300Z true
+	asked := ergo.HasTick(-1)        // false: ask about a number from outside, like a clock or a file's modified time, before handing it to a function that takes a tick
+	fmt.Println(text, iso, back == t, asked)
+	// Output: 2012aug6.0517.57300 2012-08-06T05:17:57.300Z true false
 }
 
 // #endregion tick

@@ -58,6 +58,8 @@ const (
 // A tick is an integer count of milliseconds since the start of 1970, the way time.Now().UnixMilli() counts, and ergo keeps every tick between zero and the last millisecond of 9999. Two text forms carry a tick exactly. The iso form is like "2012-08-06T05:17:57.300Z": always 24 characters, always milliseconds, always Z. The short form is like "2012aug6.0517.57300": the year, month, and day, then a dot and the clock, then a dot and the milliseconds into the minute, written only as deep as the moment needs, so the start of 1990 is just "1990" and the longest text is 20 characters.
 //
 // Each form reads back to exactly the tick that wrote it, and reads nothing else. A reader accepts the text its writer produces and refuses everything else, from a missing millisecond digit to "1990feb1" where the writer would say "1990feb". The last check in each reader is the round trip itself: parse the text, write the tick, and require the same text. That's what keeps every text one to one with its tick.
+//
+// Every function that takes a tick panics on a number that isn't one, because a caller handing it one has a bug. A number from outside, like a system clock or a file's modified time, isn't the caller's to vouch for, so HasTick asks about it first, and asking never panics; once HasTick says yes, nothing here panics on that tick. CheckTick is the guard that enforces the same answer, and it's the gate every function here goes through.
 
 const lastTick = 253402300799999 // the last millisecond of 9999, which keeps a year at four digits in every edition
 
@@ -66,12 +68,22 @@ var months = []string{"jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "s
 // parts of a tick in utc: the year, month 1 through 12, day 1 through 31, hour, minute, and milliseconds into the minute
 type parts struct{ y, m, d, h, i, ms int }
 
-// splitTick splits a tick into its utc parts, or panics because the caller handed it something that isn't a tick, which is a bug in the caller: a tick is zero through the last millisecond of 9999
-func splitTick(t int64) parts {
-	if t < 0 || t > lastTick {
+// HasTick is true if t is a tick, zero through the last millisecond of 9999. It never panics, so a number from outside, like a clock or a file's modified time, can be asked about before it's handed to a function that takes a tick.
+func HasTick(t int64) bool {
+	return 0 <= t && t <= lastTick
+}
+
+// CheckTick is a guard: it passes a tick through, or panics because the caller handed it something that isn't one, which is a bug in the caller, not an ordinary answer to handle. Ask HasTick first about a number from outside.
+func CheckTick(t int64) int64 {
+	if !HasTick(t) {
 		panic(fmt.Sprintf("not a tick: %d", t))
 	}
-	u := time.UnixMilli(t).UTC()
+	return t
+}
+
+// splitTick splits a tick into its utc parts, or panics because the caller handed it something that isn't a tick, which is a bug in the caller: a tick is zero through the last millisecond of 9999
+func splitTick(t int64) parts {
+	u := time.UnixMilli(CheckTick(t)).UTC()
 	return parts{u.Year(), int(u.Month()), u.Day(), u.Hour(), u.Minute(), u.Second()*1000 + u.Nanosecond()/1e6}
 }
 
@@ -99,7 +111,7 @@ func numerals(s string) (int, bool) {
 	return n, err == nil
 }
 
-// TickToISO writes a tick in the iso form, like "2012-08-06T05:17:57.300Z". It panics if t isn't a tick, which is a bug in the caller.
+// TickToISO writes a tick in the iso form, like "2012-08-06T05:17:57.300Z". It panics if t isn't a tick, which is a bug in the caller; ask HasTick first about a number from outside.
 func TickToISO(t int64) string {
 	p := splitTick(t)
 	return fmt.Sprintf("%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", p.y, p.m, p.d, p.h, p.i, p.ms/1000, p.ms%1000)
@@ -129,7 +141,7 @@ func parseISO(s string) (int64, bool) {
 	return joinTick(parts{n(0, 4), n(5, 7), n(8, 10), n(11, 13), n(14, 16), n(17, 19)*1000 + n(20, 23)})
 }
 
-// TickToText writes a tick in the short form, like "2012aug6.0517.57300", as deep as the moment needs and no deeper. It panics if t isn't a tick, which is a bug in the caller.
+// TickToText writes a tick in the short form, like "2012aug6.0517.57300", as deep as the moment needs and no deeper. It panics if t isn't a tick, which is a bug in the caller; ask HasTick first about a number from outside.
 func TickToText(t int64) string {
 	p := splitTick(t)
 	depth := 0 // how deep the text must go: the year alone, then the month, day, hour, minute, and millisecond

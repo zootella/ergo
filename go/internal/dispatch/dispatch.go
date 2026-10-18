@@ -46,6 +46,10 @@ func Call(name string, args []any) (result any, err error) {
 		return ergo.Year, nil
 	case "Time.month":
 		return ergo.Month, nil
+	case "hasTick":
+		return ergo.HasTick(integer(args, 0)), nil
+	case "checkTick":
+		return ergo.CheckTick(integer(args, 0)), nil
 	case "tickToText":
 		return ergo.TickToText(integer(args, 0)), nil
 	case "textToTick":

@@ -1,4 +1,17 @@
 [
+  {"function": "hasTick", "input": [0], "output": true, "note": "the floor: tick zero is the start of 1970, and a tick, though zero is falsy in javascript and python"},
+  {"function": "hasTick", "input": [1344230277300], "output": true, "note": "an ordinary moment, the Curiosity landing"},
+  {"function": "hasTick", "input": [253402300799999], "output": true, "note": "the ceiling: the last millisecond of 9999"},
+  {"function": "hasTick", "input": [-1], "output": false, "note": "one before the floor; asking never fails, so a number from outside, like a system clock or a file's modified time, can be asked about before it's handed to a function that takes a tick"},
+  {"function": "hasTick", "input": [253402300800000], "output": false, "note": "one past the ceiling"},
+  {"function": "hasTick", "input": [9007199254740991], "output": false, "note": "the integer ceiling every edition shares is far past the last tick"},
+  {"function": "hasTick", "input": [-9007199254740991], "output": false, "note": "and its floor"},
+  {"function": "checkTick", "input": [1344230277300], "output": 1344230277300, "note": "returns the tick, so a call can pass a valid one through"},
+  {"function": "checkTick", "input": [0], "output": 0, "note": "zero passes; a guard that tested truthiness would refuse the first tick"},
+  {"function": "checkTick", "input": [253402300799999], "output": 253402300799999, "note": "the ceiling passes"},
+  {"function": "checkTick", "input": [-1], "throws": true, "note": "a guard: a number that isn't a tick is a bug in the caller, and the edition fails loudly in its own way"},
+  {"function": "checkTick", "input": [253402300800000], "throws": true, "note": "past the ceiling, the same"},
+
   {"function": "tickToIso", "input": [0], "output": "1970-01-01T00:00:00.000Z", "note": "the floor: tick zero is the start of 1970"},
   {"function": "isoToTick", "input": ["1970-01-01T00:00:00.000Z"], "output": 0, "note": "and back; a round trip is a pair of vectors, one each way"},
   {"function": "tickToIso", "input": [1], "output": "1970-01-01T00:00:00.001Z", "note": "one millisecond in"},
