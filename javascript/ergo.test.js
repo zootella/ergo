@@ -23,6 +23,7 @@ import {
   Bin,
   hashFile,
   hashStream,
+  FujiHasher,
 } from './ergo.js'
 import { call } from './driver.js'
 import { startEditions, stopEditions } from './editions.js'
@@ -256,7 +257,14 @@ describe('fuji hashes', () => {
       stream: file.stream(),
       size: file.size,
     }) //the piece hash, from one read of all of it, which gives the tip hash too
+
+    let hasher = FujiHasher({ size: 5 }) //or feed one the pieces as they arrive, like the chunks of an upload
+    await hasher.update(Data({ text: 'he' }))
+    await hasher.update(Data({ text: 'llo' }))
+    let both = await hasher.digest() //both hashes, the same as from the stream
     // #endregion fuji
+    expect(both.tipHash.base32()).toBe(tipHash.base32())
+    expect(both.pieceHash.base32()).toBe(pieceHash.base32())
     expect(tipHash.base32()).toBe(
       'BSOEFHWYKUFE2ZEYFGKAE2X4IZXTXXCDJZQ2YRGKLMAETUJDTIHQ',
     )
@@ -527,7 +535,7 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
     )
 
     test(
-      'random tiny files with random tiny protocols get the same fuji hashes in every edition, from a file and from a stream',
+      'random tiny files with random tiny protocols get the same fuji hashes in every edition, from a file, from a stream, and fed to a hasher',
       async () => {
         let stop = Date.now() + fuzzSeconds * Time.second
         let cycles = 0
@@ -544,6 +552,7 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
           let data = Data({ random: between(1, 500) })
           let file = { base16: data.base16() }
           let pieces = randomPieces(data).map((p) => ({ base16: p.base16() }))
+          let fed = randomPieces(data).map((p) => ({ base16: p.base16() })) //cut another way, for the hasher
           let expected = await call('hashStream', [pieces, protocol])
           let tip = await call('hashFile', [file, protocol])
           expect(tip.tipHash).toEqual(expected.tipHash) //importantly, make sure we get the same tip hash from slicing the file and peeking at the stream!
@@ -553,15 +562,56 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
                 expected,
               )
               expect(await e.hashFile(file, protocol), name).toEqual(tip)
+              expect(
+                await e.FujiHasher(data.size(), fed, protocol),
+                name,
+              ).toEqual(expected)
             }),
           )
           cycles++
         }
         console.log(
-          `every edition fuzzed ${cycles} tiny files through both fuji hashes in ${fuzzSeconds} seconds, ${Math.round(cycles / fuzzSeconds)} a second`,
+          `every edition fuzzed ${cycles} tiny files through both fuji hashes, from a file, a stream, and a hasher, in ${fuzzSeconds} seconds, ${Math.round(cycles / fuzzSeconds)} a second`,
         )
       },
       (fuzzSeconds + 60) * Time.second,
+    )
+
+    test(
+      'random realistic files, with the real protocol, get the same fuji hashes in every edition, from a file, from a stream, and fed to a hasher',
+      async () => {
+        let stop = Date.now() + fuzzSeconds * Time.second
+        let cycles = 0
+        while (Date.now() < stop) {
+          let size = 1 + Math.floor(Math.random() * 20 * Size.mb) //icarus's realistic files, up to 20 MiB, across several 4 MiB pieces
+          let unit = Data({ random: 1 + Math.floor(Math.random() * 5000) })
+          let file = { repeat: unit.base16(), length: size } //random bytes repeated to the size, so each edition makes the file from a line of json rather than 40 MB of base16
+          let a = new Uint8Array(size)
+          for (let i = 0; i < size; i += unit.size())
+            a.set(unit.array().subarray(0, size - i), i) //the same bytes here, in-process
+          let expected = await call('hashStream', [[file]])
+          let tip = await call('hashFile', [file])
+          expect(tip.tipHash).toEqual(expected.tipHash) //importantly, make sure we get the same tip hash from slicing the file and peeking at the stream!
+          let hasher = FujiHasher({ size })
+          for (let piece of randomPieces(Data({ array: a })))
+            await hasher.update(piece) //pieces of any size, some larger than the conveyor belt
+          let both = await hasher.digest()
+          expect(both.tipHash.base16()).toBe(expected.tipHash.base16)
+          expect(both.pieceHash.base16()).toBe(expected.pieceHash.base16)
+          await Promise.all(
+            Object.entries(editions).map(async ([name, e]) => {
+              expect(await e.hashStream([file]), name).toEqual(expected)
+              expect(await e.hashFile(file), name).toEqual(tip)
+              expect(await e.FujiHasher(size, [file]), name).toEqual(expected)
+            }),
+          )
+          cycles++
+        }
+        console.log(
+          `every edition fuzzed ${cycles} realistic files through both fuji hashes, from a file, a stream, and a hasher, in ${fuzzSeconds} seconds`,
+        )
+      },
+      (fuzzSeconds + 120) * Time.second,
     )
 
     test(
@@ -589,6 +639,10 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
               tipHash: b16(tip),
               pieceHash: b16(piece),
             })
+            expect(await e.FujiHasher(size, [file]), name).toEqual({
+              tipHash: b16(tip),
+              pieceHash: b16(piece),
+            }) //and all of it in one update, more than a piece at once
           }
         }
         //icarus's 19.7 MB and 28 MB files can't be pinned this way: its mulberry seed grows past the integers a double holds exactly at about 19.7 MB, so no generator that wraps at 32 bits can make their last bytes

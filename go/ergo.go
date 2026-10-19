@@ -736,14 +736,74 @@ func (p HashProtocol) HashFile(file io.ReaderAt, size int64) (HashStatus, error)
 
 // HashStream is the package's HashStream with this protocol.
 func (p HashProtocol) HashStream(stream io.Reader, size int64, onProgress func(HashStatus)) (HashStatus, error) {
-	measurePieces := HashMeasure(size, p.Pieces.Size) // measurements for the piece hash
-	measureTips := HashMeasure(size, p.Tips.Size)     // and for the tip hash, which we'll peek for through the stream
+	hasher := p.NewFujiHasher(size)
 	status := newStatus(size)
 	progress := func() {
 		if onProgress != nil {
 			onProgress(status)
 		}
 	}
+
+	buffer := make([]byte, 64*KB) // each read from the stream lands here
+	var fed int64                 // how many bytes we've given the hasher
+	for fed <= size {             // loop while boxes of data arrive from the stream; past the size, stop reading, and Digest will refuse
+		n, err := stream.Read(buffer)
+		if n > 0 {
+			hasher.Update(DataFromArray(buffer[:n])) // a new delivery of bytes from the stream has arrived! 📦
+			fed += int64(n)
+			hashed := fed - fed%p.Pieces.Size // each update hashes every piece it fills, so this much is hashed
+			if status.HashedSize < hashed && hashed <= size {
+				status.HashedSize = hashed
+				status.UpdateTime = now()
+				progress()
+			}
+		}
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			return status, err
+		}
+	}
+
+	// hash the summary of the file
+	hashes, err := hasher.Digest()
+	if err != nil {
+		return status, err
+	}
+	status.HashedSize = size // the fragment piece, if any, is hashed too
+	status.TipHash = hashes.TipHash
+	status.PieceHash = hashes.PieceHash
+	finish(&status)
+	progress()
+	return status, nil
+}
+
+// FujiHashes are both fuji hashes of a file, which a FujiHasher answers.
+type FujiHashes struct {
+	TipHash   Data // from the stripes at the file's start, middle, and end
+	PieceHash Data // from the hashes of all of its pieces
+}
+
+// FujiHasher takes a file a piece at a time: make one for a file of a given size, Update it with each piece of the file in order, each a Data, then Digest for both its tip hash and its piece hash. It's for bytes that arrive as events, like the chunks of an upload; HashStream reads a stream into one, and it's an io.Writer, so io.Copy can feed one too. Update never fails, and Digest answers an error when the pieces didn't add up to the size, since that's a fact about the data that came in rather than a bug. Digest doesn't finish it, as with a Hasher.
+type FujiHasher struct {
+	size      int64
+	pieceSize int
+	stripes   [][2]int64
+	pieces    *Bin
+	tips      *Bin
+	piece     []byte
+	address   int64
+}
+
+// NewFujiHasher makes a FujiHasher for a file of size bytes with the fuji protocol; a HashProtocol's own NewFujiHasher takes another protocol. It panics if size is zero, a bug in the caller: an empty file has no fuji hash.
+func NewFujiHasher(size int64) *FujiHasher {
+	return DefaultHashProtocol.NewFujiHasher(size)
+}
+
+// NewFujiHasher is the package's NewFujiHasher with this protocol.
+func (p HashProtocol) NewFujiHasher(size int64) *FujiHasher {
+	measurePieces := HashMeasure(size, p.Pieces.Size) // measurements for the piece hash
+	measureTips := HashMeasure(size, p.Tips.Size)     // and for the tip hash, which we'll peek for as the pieces pass
 
 	// for the pieces hash, the summary we'll hash is the title followed by hashes of pieces of file data, each SHA-256 hash 32 bytes (hashing hashes, not file data)
 	piecesTitle := DataFromText(fmt.Sprintf("%s%d.", p.Pieces.Title, size))
@@ -755,65 +815,69 @@ func (p HashProtocol) HashStream(stream io.Reader, size int64, onProgress func(H
 	tips := NewBin(tipsTitle.Size() + int(measureTips.StripeSize))
 	tips.Add(tipsTitle)
 
-	hashPiece := func(piece []byte) { // hash a piece and add its hash to the summary
-		pieces.Add(SHA256(DataFromArray(piece)))
-		status.HashedSize += int64(len(piece))
-		status.UpdateTime = now()
-		progress()
-	}
-
 	pieceSize := int(p.Pieces.Size)
-	piece := make([]byte, 0, pieceSize) // the piece we're filling, which a Data holds without a copy once it's full
-	buffer := make([]byte, 64*KB)       // each read from the stream lands here
-	var address int64                   // how far into the stream each box that arrives is
-	for {
-		n, err := stream.Read(buffer)
-		if n > 0 {
-			// a new delivery of bytes from the stream has arrived! 📦
-			delivery := buffer[:n]
-			stripe := [2]int64{address, address + int64(n)} // where in the stream this box of data is
-			address += int64(n)                             // outside the box, move address past this box to use to mark the start of the next one
-			if address > size {
-				return status, fmt.Errorf("ergo: the stream is longer than the %d bytes it was said to be", size)
-			}
+	return &FujiHasher{
+		size:      size,
+		pieceSize: pieceSize,
+		stripes:   measureTips.Stripes,
+		pieces:    pieces,
+		tips:      tips,
+		piece:     make([]byte, 0, pieceSize), // the piece we're filling, which a Data holds without a copy once it's full
+	}
+}
 
-			// first, for the tip hash, we don't have random access through the file, but we do through this box!
-			for _, o := range HashStripeOverlap(stripe, measureTips.Stripes) {
-				tips.Add(DataFromArray(delivery[o[0]-stripe[0] : o[1]-stripe[0]])) // subtract box address to clip in data
-			}
+// Update hashes the next piece.
+func (h *FujiHasher) Update(d Data) {
+	h.feed(d.b)
+}
 
-			// second, for the piece hash, shovel bytes from the box into the piece until the box is empty 🪏
-			for shoveled := 0; shoveled < n; {
-				shovel := min(n-shoveled, pieceSize-len(piece))
-				piece = append(piece, delivery[shoveled:shoveled+shovel]...)
-				shoveled += shovel
-				if len(piece) == pieceSize {
-					hashPiece(piece)
-					piece = make([]byte, 0, pieceSize)
-				}
-			}
+// Write hashes p, the next piece as raw bytes, so a FujiHasher is an io.Writer; it never fails, and Digest tells of too many bytes or too few.
+func (h *FujiHasher) Write(p []byte) (int, error) {
+	h.feed(p)
+	return len(p), nil
+}
+
+// feed takes the next box of bytes 📦
+func (h *FujiHasher) feed(delivery []byte) {
+	n := len(delivery)
+	stripe := [2]int64{h.address, h.address + int64(n)} // where in the file this box of data is
+	h.address += int64(n)                               // outside the box, move address past this box to use to mark the start of the next one
+	if h.address > h.size {
+		return // more bytes than the size, which Digest will refuse; past the size, there's nothing to hash them into
+	}
+
+	// first, for the tip hash, we don't have random access through the file, but we do through this box!
+	for _, o := range HashStripeOverlap(stripe, h.stripes) {
+		h.tips.Add(DataFromArray(delivery[o[0]-stripe[0] : o[1]-stripe[0]])) // subtract box address to clip in data
+	}
+
+	// second, for the piece hash, shovel bytes from the box into the piece until the box is empty 🪏
+	for shoveled := 0; shoveled < n; {
+		shovel := min(n-shoveled, h.pieceSize-len(h.piece))
+		h.piece = append(h.piece, delivery[shoveled:shoveled+shovel]...)
+		shoveled += shovel
+		if len(h.piece) == h.pieceSize {
+			h.pieces.Add(SHA256(DataFromArray(h.piece)))
+			h.piece = make([]byte, 0, h.pieceSize)
 		}
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			return status, err
-		}
+	}
+}
+
+// Digest is both hashes of the pieces so far, or an error because they didn't add up to the size.
+func (h *FujiHasher) Digest() (FujiHashes, error) {
+	if h.address != h.size {
+		return FujiHashes{}, fmt.Errorf("ergo: the pieces were %d bytes, not the %d they were said to be", h.address, h.size)
 	}
 
-	// most files will end with a fragment piece smaller than a full piece
-	if len(piece) > 0 {
-		hashPiece(piece)
-	}
-	if status.HashedSize != size {
-		return status, fmt.Errorf("ergo: the stream was %d bytes, not the %d it was said to be", status.HashedSize, size)
+	// most files will end with a fragment piece smaller than a full piece; hash it into a copy of the summary, so the hasher is unchanged and Digest can be asked again
+	summary := NewBin(h.pieces.Capacity())
+	summary.Add(h.pieces.Data())
+	if len(h.piece) > 0 {
+		summary.Add(SHA256(DataFromArray(h.piece)))
 	}
 
-	// hash the summaries of the file in the bins
-	status.PieceHash = SHA256(full(pieces))
-	status.TipHash = SHA256(full(tips))
-	finish(&status)
-	progress()
-	return status, nil
+	// hash the summaries of the file in the bins, which must be exactly full, a check on our prediction of how much data we'd hash
+	return FujiHashes{TipHash: SHA256(full(h.tips)), PieceHash: SHA256(full(summary))}, nil
 }
 
 // full is the Data a Bin holds, which must be exactly full; a Bin that isn't means this code predicted wrong how much data it would hash, a bug here

@@ -103,4 +103,16 @@ func ExampleHashFile() {
 	// AD4G5U6L4LJC4DYUIUSFRIYHH5KMRVHCLOQQAKAPNNPFCRAUIV3Q
 }
 
+func ExampleFujiHasher() {
+	hasher := ergo.NewFujiHasher(5) // or feed one the pieces as they arrive, like the chunks of an upload
+	hasher.Update(ergo.DataFromText("he"))
+	hasher.Update(ergo.DataFromText("llo"))
+	both, _ := hasher.Digest() // both hashes, the same as from the stream
+	fmt.Println(both.TipHash.Base32())
+	fmt.Println(both.PieceHash.Base32())
+	// Output:
+	// BSOEFHWYKUFE2ZEYFGKAE2X4IZXTXXCDJZQ2YRGKLMAETUJDTIHQ
+	// AD4G5U6L4LJC4DYUIUSFRIYHH5KMRVHCLOQQAKAPNNPFCRAUIV3Q
+}
+
 // #endregion fuji

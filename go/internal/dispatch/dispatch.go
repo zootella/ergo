@@ -121,6 +121,16 @@ func Call(name string, args []any) (result any, err error) {
 			return nil, err
 		}
 		return map[string]any{"tipHash": base16(status.TipHash), "pieceHash": base16(status.PieceHash)}, nil
+	case "FujiHasher":
+		h := protocol(args, 2).NewFujiHasher(int64(count(args, 0)))
+		for _, piece := range pieces(args, 1) {
+			h.Update(piece)
+		}
+		hashes, err := h.Digest()
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"tipHash": base16(hashes.TipHash), "pieceHash": base16(hashes.PieceHash)}, nil
 	default:
 		return nil, fmt.Errorf("unknown function: %s", name)
 	}

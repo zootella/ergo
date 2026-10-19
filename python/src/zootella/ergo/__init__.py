@@ -83,6 +83,12 @@ ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f
 >>> piece = hash_stream(io.BytesIO(b"hello"), 5).piece_hash  # the piece hash, from one read of all of it, which gives the tip hash too
 >>> tip.base32(), piece.base32()
 ('BSOEFHWYKUFE2ZEYFGKAE2X4IZXTXXCDJZQ2YRGKLMAETUJDTIHQ', 'AD4G5U6L4LJC4DYUIUSFRIYHH5KMRVHCLOQQAKAPNNPFCRAUIV3Q')
+>>> from zootella.ergo import FujiHasher, Data
+>>> hasher = FujiHasher(5)  # or feed one the pieces as they arrive, like the chunks of an upload
+>>> hasher.update(Data(text="he"))
+>>> hasher.update(Data(text="llo"))
+>>> hasher.digest() == (tip, piece)  # both hashes, the same as from the stream
+True
 
 # endregion fuji
 """
@@ -931,76 +937,117 @@ def _read_exactly(file: BinaryIO, n: int) -> bytes:
     return bytes(a)
 
 
+class FujiHashes(NamedTuple):
+    """The two fuji hashes, which a fuji hasher's digest answers."""
+
+    tip_hash: Data
+    piece_hash: Data
+
+
+class FujiHasher:
+    """A fuji hasher, a piece at a time: make one for a file of a given size, update it with each piece of the file in order, each a Data, and digest for both its tip hash and its piece hash.
+
+    It's for bytes that arrive as events, like the chunks of an upload; hash_stream below reads a stream into one. update never fails, and digest raises ValueError when the pieces didn't add up to the size, since that's a fact about the data that came in rather than a bug. Digest doesn't finish it, as with SHA256.
+    """
+
+    __slots__ = (
+        "_address",
+        "_piece",
+        "_piece_size",
+        "_pieces",
+        "_size",
+        "_stripes",
+        "_tips",
+    )
+
+    def __init__(self, size: int, protocol: HashProtocol = HASH_PROTOCOL) -> None:
+        # measurements for the piece hash, and for the tip hash, which we'll peek for as the pieces pass; an empty file has no fuji hash, since both measures need a size of at least one byte
+        measure_pieces = hash_measure(size, protocol.pieces.size)
+        measure_tips = hash_measure(size, protocol.tips.size)
+        self._size = size
+        self._piece_size = protocol.pieces.size
+        self._stripes = measure_tips.stripes
+
+        # for the pieces hash, the summary we'll hash is the title followed by hashes of pieces of file data, each SHA-256 hash 32 bytes (hashing hashes, not file data)
+        title = Data(text=f"{protocol.pieces.title}{size}.")
+        self._pieces = Bin(title.size() + 32 * measure_pieces.pieces)
+        self._pieces.add(title)
+
+        # for the tips hash, the summary we'll hash is the title followed by the start, middle, and end stripes of data
+        title = Data(text=f"{protocol.tips.title}{size}.")
+        self._tips = Bin(title.size() + measure_tips.stripe_size)
+        self._tips.add(title)
+
+        # the piece we're filling, which a Data will look at without a copy once it's full
+        self._piece = bytearray()
+        self._address = 0  # how far into the file each box that arrives is
+
+    def update(self, data: Data) -> None:
+        """Hash the next piece, a Data, taking it in as the next box of bytes 📦."""
+        box = _check_data(data)
+        # where in the file this box of data is; then, outside the box, move address past it to mark the start of the next one
+        stripe = (self._address, self._address + box.size())
+        self._address += box.size()
+        if self._address > self._size:
+            # more bytes than the size, which digest will refuse; past the size, there's nothing to hash them into
+            return
+
+        # first, for the tip hash, we don't have random access through the file, but we do through this box!
+        for start, end in hash_stripe_overlap(stripe, self._stripes):
+            # subtract box address to clip in data
+            self._tips.add(box.clip_view(start - stripe[0], end - stripe[0]))
+
+        # second, for the piece hash, shovel bytes from the box into the piece until the box is empty 🪏
+        shoveled = 0  # we move this index over the bytes in the box as we process them
+        while shoveled < box.size():
+            shovel = min(box.size() - shoveled, self._piece_size - len(self._piece))
+            self._piece += box.clip_view(shoveled, shoveled + shovel)._view
+            shoveled += shovel
+            if len(self._piece) == self._piece_size:
+                self._pieces.add(sha256(Data(array=self._piece)))
+                self._piece = bytearray()
+
+    def digest(self) -> FujiHashes:
+        """Both hashes of the pieces so far, or raise because they didn't add up to the size."""
+        if self._address != self._size:
+            raise ValueError(
+                f"the pieces were {self._address} bytes, not the {self._size} they were said to be"
+            )
+        # most files will end with a fragment piece smaller than a full piece; hash it into a copy of the summary, so the hasher is unchanged and digest can be asked again
+        summary = Bin(self._pieces.capacity())
+        summary.add(self._pieces.data())
+        if self._piece:
+            summary.add(sha256(Data(array=self._piece)))
+        # hash the summaries of the file in the bins, which must be exactly full, a check on our prediction of how much data we'd hash
+        return FujiHashes(sha256(_full(self._tips)), sha256(_full(summary)))
+
+
 def hash_stream(
     stream: BinaryIO,
     size: int,
     protocol: HashProtocol = HASH_PROTOCOL,
     on_progress: Callable[[HashStatus], None] | None = None,
 ) -> HashStatus:
-    """Given a binary stream to read and its size, compute both the tip hash and the piece hash in one pass."""
-    # measurements for the piece hash, and for the tip hash, which we'll peek for through the stream
-    measure_pieces = hash_measure(size, protocol.pieces.size)
-    measure_tips = hash_measure(size, protocol.tips.size)
+    """Given a binary stream to read and its size, compute both the tip hash and the piece hash in one pass; it reads the stream into a FujiHasher, which bytes that arrive as events can feed directly."""
+    hasher = FujiHasher(size, protocol)
     status = HashStatus(total_size=size, start_time=_now(), update_time=_now())
-
-    # for the pieces hash, the summary we'll hash is the title followed by hashes of pieces of file data, each SHA-256 hash 32 bytes (hashing hashes, not file data)
-    pieces_title = Data(text=f"{protocol.pieces.title}{size}.")
-    pieces = Bin(pieces_title.size() + 32 * measure_pieces.pieces)
-    pieces.add(pieces_title)
-
-    # for the tips hash, the summary we'll hash is the title followed by the start, middle, and end stripes of data
-    tips_title = Data(text=f"{protocol.tips.title}{size}.")
-    tips = Bin(tips_title.size() + measure_tips.stripe_size)
-    tips.add(tips_title)
-
-    def hash_piece(piece: bytearray) -> None:
-        """Hash a piece and add its hash to the summary."""
-        pieces.add(sha256(Data(array=piece)))
-        status.hashed_size += len(piece)
-        status.update_time = _now()
-        if on_progress:
-            on_progress(status)
-
-    # the piece we're filling, which a Data will look at without a copy once it's full
-    piece = bytearray()
-    address = 0  # how far into the stream each box that arrives is
-    while box_bytes := stream.read(64 * Size.KB):
+    fed = 0  # how many bytes we've given the hasher
+    # loop while boxes of data arrive from the stream; past the size, stop reading, and digest will refuse
+    while fed <= size and (box := stream.read(64 * Size.KB)):
         # a new delivery of bytes from the stream has arrived! 📦
-        box = Data(array=box_bytes)
-        # where in the stream this box of data is; then, outside the box, move address past it to mark the start of the next one
-        stripe = (address, address + box.size())
-        address += box.size()
-        if address > size:
-            raise ValueError(
-                f"the stream is longer than the {size} bytes it was said to be"
-            )
+        hasher.update(Data(array=box))
+        fed += len(box)
+        # each update hashes every piece it fills, so this much is hashed
+        hashed = fed - fed % protocol.pieces.size
+        if status.hashed_size < hashed <= size:
+            status.hashed_size = hashed
+            status.update_time = _now()
+            if on_progress:
+                on_progress(status)
 
-        # first, for the tip hash, we don't have random access through the file, but we do through this box!
-        for start, end in hash_stripe_overlap(stripe, measure_tips.stripes):
-            # subtract box address to clip in data
-            tips.add(box.clip_view(start - stripe[0], end - stripe[0]))
-
-        # second, for the piece hash, shovel bytes from the box into the piece until the box is empty 🪏
-        shoveled = 0  # we move this index over the bytes in the box as we process them
-        while shoveled < box.size():
-            shovel = min(box.size() - shoveled, protocol.pieces.size - len(piece))
-            piece += box.clip_view(shoveled, shoveled + shovel)._view
-            shoveled += shovel
-            if len(piece) == protocol.pieces.size:
-                hash_piece(piece)
-                piece = bytearray()
-
-    # most files will end with a fragment piece smaller than a full piece
-    if piece:
-        hash_piece(piece)
-    if status.hashed_size != size:
-        raise ValueError(
-            f"the stream was {status.hashed_size} bytes, not the {size} it was said to be"
-        )
-
-    # hash the summaries of the file in the bins
-    status.piece_hash = sha256(_full(pieces))
-    status.tip_hash = sha256(_full(tips))
+    # hash the summary of the file
+    status.tip_hash, status.piece_hash = hasher.digest()
+    status.hashed_size = size  # the fragment piece, if any, is hashed too
     status.update_time = _now()
     status.duration = status.update_time - status.start_time
     if on_progress:

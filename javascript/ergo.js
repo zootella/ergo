@@ -789,30 +789,17 @@ export async function hashFile({ file, size, protocol = hashProtocol }) {
   return status
 }
 
-//given a ReadableStream (Web Streams API), compute both the tip hash and the piece hash
-//works everywhere: local and Lambda Node, and Uppy on a page
-export async function hashStream({
-  stream,
-  size,
-  protocol = hashProtocol,
-  onProgress,
-  signal,
-}) {
-  signal?.throwIfAborted()
-  if (!(stream && size > 0))
-    throw new Error(`not a stream of ${size} bytes: ${stream}`)
+//a fuji hasher, a piece at a time: make one for a file of a given size, then await update(piece) with each piece of the file in order, each a Data, and await digest() for both its tip hash and its piece hash
+//it's for bytes that arrive as events, like the chunks of an upload; hashStream below reads a stream into one
+//update answers a promise, since the pieces go through web crypto; awaiting each keeps a fast producer from piling up pieces not yet hashed, and each update waits for the one before, so pieces hash in order even when a caller doesn't
+//a piece is read when its turn comes, so leave its bytes as they are until its update answers
+//update never fails; digest refuses, by throwing, when the pieces didn't add up to the size, since that's a fact about the data that came in rather than a bug; and digest doesn't finish it, as with Sha256
+export function FujiHasher({ size, protocol = hashProtocol }) {
+  if (!(Number.isSafeInteger(size) && size > 0))
+    throw new Error(`not a size to hash: ${size}`) //an empty file has no fuji hash; both measures need a size of at least one byte
 
   let measurePieces = hashMeasure({ file: size, unit: protocol.pieces.size }) //measurements for the piece hash
-  let measureTips = hashMeasure({ file: size, unit: protocol.tips.size }) //and for the tip hash, which we'll peek for through the stream
-  let status = {
-    //object we'll give to the progress callback, and also return
-    startTime: Date.now(),
-    updateTime: Date.now(), //when we last changed anything here
-    measurePieces: measurePieces,
-    measureTips: measureTips,
-    hashedSize: 0,
-    totalSize: size,
-  }
+  let measureTips = hashMeasure({ file: size, unit: protocol.tips.size }) //and for the tip hash, which we'll peek for as the pieces pass
 
   //for the pieces hash, the summary we'll hash is the title followed by hashes of pieces of file data (hashing hashes, not file data)
   let piecesTitle = Data({ text: `${protocol.pieces.title}${size}.` })
@@ -833,104 +820,146 @@ export async function hashStream({
   belt.array = new Uint8Array(belt.capacity) //this method allocates a buffer once and uses it for the whole file!
   belt.fill = 0 //the belt has .fill bytes of data in it, measured from the start; data bytes are 0 up to belt.fill
 
+  let address = 0 //how far into the file each box that arrives is
+  let queue = Promise.resolve() //the updates so far, each waiting for the one before
+
+  //take the next box of bytes 📦
+  async function feed(data) {
+    let box = {}
+    box.data = data
+    box.shoveled = 0 //we move this index over the bytes in the box as we process them; remaining data starts at box.shoveled
+    box.stripe = [address, address + box.data.size()] //where in the file this box of data is
+    address += box.data.size() //outside the box, move address past this box to use to mark the start of the next one
+    if (address > size) return //more bytes than the size, which digest will refuse; past the size, there's nothing to hash them into
+
+    //first, for the tip hash, we don't have random access through the file, but we do through this box!
+    for (let [start, end] of hashStripeOverlap(
+      box.stripe,
+      measureTips.stripes,
+    )) {
+      //the 1-3 stripes in the file we should add to assemble the file data for the tip hash
+      tipsBin.add(box.data.clipView(start - box.stripe[0], end - box.stripe[0])) //subtract box address to clip in data
+    }
+
+    //second, for the piece hash, shovel bytes from the box into the belt until the box is empty
+    while (box.shoveled < box.data.size()) {
+      //loop to get through them
+
+      //copy a shovelful of bytes from the box to our belt 🪏
+      let shovel = Math.min(
+        //how many can we shovel over right now?
+        box.data.size() - box.shoveled, //not more that remain for us to take from this delivery
+        belt.capacity - belt.fill, //nor more than we have space left in our conveyor belt buffer
+      )
+      belt.array.set(
+        //into belt...
+        box.data.clipView(box.shoveled, box.shoveled + shovel).array(), //...copy shovel quantity bytes from box at index...
+        belt.fill, //...to belt at its fill position
+      )
+      belt.fill += shovel //there are more bytes of file data in belt now
+      box.shoveled += shovel //and we've moved past them in the box
+
+      //if the belt has enough data at the start to hash
+      while (belt.fill >= protocol.pieces.size) {
+        //hash the first half; if the file filled 8mb all at once this loop will run twice!
+        piecesBin.add(
+          await sha256(
+            Data({ array: belt.array }).clipView(0, protocol.pieces.size),
+          ),
+        ) //4mib hashes in ~10ms, frequency like animation frames
+
+        //slide the second half of the conveyor belt buffer to the start
+        let beyond = belt.fill - protocol.pieces.size //how many bytes of data are on the belt beyond the first half we just hashed
+        if (beyond > 0)
+          belt.array.copyWithin(0, protocol.pieces.size, belt.fill) //this calls down to C's memmove, and is very fast
+        belt.fill = beyond
+      }
+    }
+  }
+
+  //the hashes of all the bytes taken in, which must add up to the size
+  async function finish() {
+    if (address != size)
+      throw new Error(
+        `the pieces were ${address} bytes, not the ${size} they were said to be`,
+      )
+
+    //most files will end with a fragment piece smaller than a full piece; hash it into a copy of the summary, so the hasher is unchanged and digest can be asked again
+    let summary = Bin(piecesBin.capacity())
+    summary.add(piecesBin.data())
+    if (belt.fill > 0)
+      summary.add(
+        await sha256(Data({ array: belt.array }).clipView(0, belt.fill)),
+      )
+
+    //hash the summaries of the file in the bins, which must be exactly full, a check on our prediction of how much data we'd hash
+    return {
+      tipHash: await sha256(_full(tipsBin)),
+      pieceHash: await sha256(_full(summary)),
+    }
+  }
+
+  let o = {}
+  o.update = (data) => {
+    _checkData(data)
+    queue = queue.then(() => feed(data))
+    return queue
+  }
+  o.digest = () => queue.then(finish)
+  return o
+}
+
+//given a ReadableStream (Web Streams API), compute both the tip hash and the piece hash
+//works everywhere: local and Lambda Node, and Uppy on a page; it reads the stream into a FujiHasher, which bytes that arrive as events can feed directly
+export async function hashStream({
+  stream,
+  size,
+  protocol = hashProtocol,
+  onProgress,
+  signal,
+}) {
+  signal?.throwIfAborted()
+  if (!(stream && size > 0))
+    throw new Error(`not a stream of ${size} bytes: ${stream}`)
+  let hasher = FujiHasher({ size, protocol })
+  let status = {
+    //object we'll give to the progress callback, and also return
+    startTime: Date.now(),
+    updateTime: Date.now(), //when we last changed anything here
+    measurePieces: hashMeasure({ file: size, unit: protocol.pieces.size }), //the measurements the hasher works from, for the piece hash
+    measureTips: hashMeasure({ file: size, unit: protocol.tips.size }), //and for the tip hash
+    hashedSize: 0, //how much of the stream is hashed, a piece at a time
+    totalSize: size,
+  }
+
+  let fed = 0 //how many bytes we've given the hasher
   const reader = stream.getReader()
-  let address = 0 //how far into the stream each box that arrives is
   try {
-    while (true) {
-      //loop while boxes of data arrive from the stream
+    while (fed <= size) {
+      //loop while boxes of data arrive from the stream; past the size, stop reading, and digest will refuse
       signal?.throwIfAborted()
       let r = await reader.read() //wait for the stream to give us something
-
-      //a new delivery of bytes from the stream has arrived! 📦
-      let box = {}
       if (r.value?.length) {
-        //testing in local node, boxes come in 64kib at a time, the belt holds 128 of that size
-        box.data = Data({ array: r.value })
-        box.shoveled = 0 //we move this index over the bytes in the box as we process them; remaining data starts at box.shoveled
-        box.stripe = [address, address + box.data.size()] //where in the stream this box of data is
-
-        address += box.data.size() //outside the box, move address past this box to use to mark the start of the next one
-      }
-
-      if (box.data) {
-        //the stream gave us a box with data inside
-
-        //first, for the tip hash, we don't have random access through the file, but we do through this box!
-        for (let [start, end] of hashStripeOverlap(
-          box.stripe,
-          measureTips.stripes,
-        )) {
-          //the 1-3 stripes in the stream we should add to assemble the file data for the tip hash
-          tipsBin.add(
-            box.data.clipView(start - box.stripe[0], end - box.stripe[0]),
-          ) //subtract box address to clip in data
-        }
-
-        //second, for the piece hash, shovel bytes from the box into the belt until the box is empty
-        while (box.shoveled < box.data.size()) {
-          //loop to get through them
-
-          //copy a shovelful of bytes from the box to our belt 🪏
-          let shovel = Math.min(
-            //how many can we shovel over right now?
-            box.data.size() - box.shoveled, //not more that remain for us to take from this delivery
-            belt.capacity - belt.fill, //nor more than we have space left in our conveyor belt buffer
-          )
-          if (shovel == 0)
-            throw new Error(
-              `the stream is longer than the ${size} bytes it was said to be`,
-            ) //a full belt with bytes still coming, which only a stream past its size can make
-          belt.array.set(
-            //into belt...
-            box.data.clipView(box.shoveled, box.shoveled + shovel).array(), //...copy shovel quantity bytes from box at index...
-            belt.fill, //...to belt at its fill position
-          )
-          belt.fill += shovel //there are more bytes of stream data in belt now
-          box.shoveled += shovel //and we've moved past them in the box
-
-          //if the belt has enough data at the start to hash
-          while (belt.fill >= protocol.pieces.size) {
-            //hash the first half; if the stream filled 8mb all at once this loop will run twice!
-            signal?.throwIfAborted()
-            piecesBin.add(
-              await sha256(
-                Data({ array: belt.array }).clipView(0, protocol.pieces.size),
-              ),
-            ) //4mib hashes in ~10ms, frequency like animation frames
-            status.hashedSize += protocol.pieces.size
-            status.updateTime = Date.now()
-            onProgress?.(status)
-
-            //slide the second half of the conveyor belt buffer to the start
-            let beyond = belt.fill - protocol.pieces.size //how many bytes of data are on the belt beyond the first half we just hashed
-            if (beyond > 0)
-              belt.array.copyWithin(0, protocol.pieces.size, belt.fill) //this calls down to C's memmove, and is very fast
-            belt.fill = beyond
-          }
+        //a new delivery of bytes from the stream has arrived! 📦 testing in local node, boxes come in 64kib at a time, the belt holds 128 of that size
+        await hasher.update(Data({ array: r.value }))
+        fed += r.value.length
+        let hashed = fed - (fed % protocol.pieces.size) //each update hashes every piece it fills, so this much is hashed
+        if (hashed > status.hashedSize && hashed <= size) {
+          //another piece is hashed, about every 10ms, frequency like animation frames
+          status.hashedSize = hashed
+          status.updateTime = Date.now()
+          onProgress?.(status)
         }
       }
       if (r.done) break
     }
 
-    //most files will end with a fragment piece smaller than a full piece
-    if (belt.fill > 0) {
-      signal?.throwIfAborted()
-      piecesBin.add(
-        await sha256(Data({ array: belt.array }).clipView(0, belt.fill)),
-      )
-      status.hashedSize += belt.fill
-      status.updateTime = Date.now()
-      onProgress?.(status)
-    }
-    if (status.hashedSize != status.totalSize)
-      throw new Error(
-        `the stream was ${status.hashedSize} bytes, not the ${status.totalSize} it was said to be`,
-      )
-
-    //hash the summary of the file in the bin
+    //hash the summary of the file
     signal?.throwIfAborted()
-    status.pieceHash = await sha256(_full(piecesBin))
-    status.tipHash = await sha256(_full(tipsBin))
+    let { tipHash, pieceHash } = await hasher.digest()
+    status.hashedSize = size //the fragment piece, if any, is hashed too
+    status.tipHash = tipHash
+    status.pieceHash = pieceHash
     status.updateTime = Date.now()
     status.duration = status.updateTime - status.startTime
     onProgress?.(status)

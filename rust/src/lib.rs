@@ -1203,9 +1203,43 @@ impl HashProtocol {
         size: u64,
         mut on_progress: impl FnMut(&HashStatus),
     ) -> std::io::Result<HashStatus> {
-        let measure_pieces = hash_measure(size, self.pieces.size); // measurements for the piece hash
-        let measure_tips = hash_measure(size, self.tips.size); // and for the tip hash, which we'll peek for through the stream
+        let mut hasher = self.fuji_hasher(size);
         let mut status = new_status(size);
+        let mut buffer = vec![0; 64 * size::KB as usize]; // each read from the stream lands here
+        let mut fed = 0u64; // how many bytes we've given the hasher
+        while fed <= size {
+            // loop while boxes of data arrive from the stream; past the size, stop reading, and finalize will refuse
+            let n = match stream.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue, // a signal interrupted the read; read again
+                Err(e) => return Err(e),
+            };
+            hasher.feed(&buffer[..n]); // a new delivery of bytes from the stream has arrived! 📦
+            fed += n as u64;
+            let hashed = fed - fed % self.pieces.size; // each update hashes every piece it fills, so this much is hashed
+            if status.hashed_size < hashed && hashed <= size {
+                status.hashed_size = hashed;
+                status.update_time = now();
+                on_progress(&status);
+            }
+        }
+
+        // hash the summary of the file
+        let hashes = hasher.finalize()?;
+        status.hashed_size = size; // the fragment piece, if any, is hashed too
+        status.tip_hash = Some(hashes.tip_hash);
+        status.piece_hash = Some(hashes.piece_hash);
+        finish(&mut status);
+        on_progress(&status);
+        Ok(status)
+    }
+
+    /// [`FujiHasher::new`] with this protocol.
+    pub fn fuji_hasher(&self, size: u64) -> FujiHasher {
+        // measurements for the piece hash, and for the tip hash, which we'll peek for as the pieces pass
+        let measure_pieces = hash_measure(size, self.pieces.size);
+        let measure_tips = hash_measure(size, self.tips.size);
 
         // for the pieces hash, the summary we'll hash is the title followed by hashes of pieces of file data, each SHA-256 hash 32 bytes (hashing hashes, not file data)
         let pieces_title = Data::from_text(&format!("{}{size}.", self.pieces.title));
@@ -1218,82 +1252,127 @@ impl HashProtocol {
         tips.add(&tips_title);
 
         let piece_size = count_usize(self.pieces.size);
-        let mut piece = Vec::with_capacity(piece_size); // the piece we're filling, which moves into a Data without a copy once it's full
-        let mut buffer = vec![0; 64 * size::KB as usize]; // each read from the stream lands here
-        let mut address = 0u64; // how far into the stream each box that arrives is
-        loop {
-            let n = match stream.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(n) => n,
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue, // a signal interrupted the read; read again
-                Err(e) => return Err(e),
+        FujiHasher {
+            size,
+            piece_size,
+            stripes: measure_tips.stripes,
+            pieces,
+            tips,
+            piece: Vec::with_capacity(piece_size), // the piece we're filling, which moves into a Data without a copy once it's full
+            address: 0,                            // how far into the file each box that arrives is
+        }
+    }
+}
+
+/// Both fuji hashes of a file, which a [`FujiHasher`] answers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FujiHashes {
+    /// The tip hash, from the stripes at the file's start, middle, and end.
+    pub tip_hash: Data,
+    /// The piece hash, from the hashes of all of its pieces.
+    pub piece_hash: Data,
+}
+
+/// A fuji hasher, a piece at a time: make one for a file of a given size, update it with each piece of the file in order, and finalize for both its tip hash and its piece hash.
+///
+/// It's for bytes that arrive as events, like the chunks of an upload; [`hash_stream`] reads a stream into one, and it's an io::Write, so io::copy can feed one too. update never fails, and finalize answers an error when the pieces didn't add up to the size, since that's a fact about the data that came in rather than a bug. Finalize doesn't finish it, as with [`Sha256`].
+#[derive(Clone, Debug)]
+pub struct FujiHasher {
+    size: u64,
+    piece_size: usize,
+    stripes: Vec<(u64, u64)>,
+    pieces: Bin,
+    tips: Bin,
+    piece: Vec<u8>,
+    address: u64,
+}
+
+impl FujiHasher {
+    /// A hasher for a file of `size` bytes with the fuji protocol; [`HashProtocol::fuji_hasher`] takes another protocol.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `size` is zero, a bug in the caller: an empty file has no fuji hash.
+    pub fn new(size: u64) -> Self {
+        HashProtocol::default().fuji_hasher(size)
+    }
+
+    /// Hash the next piece.
+    pub fn update(&mut self, data: &Data) {
+        self.feed(data.array());
+    }
+
+    /// Take the next box of bytes 📦.
+    fn feed(&mut self, delivery: &[u8]) {
+        let n = delivery.len();
+        let stripe = (self.address, self.address + n as u64); // where in the file this box of data is
+        self.address += n as u64; // outside the box, move address past this box to use to mark the start of the next one
+        if self.address > self.size {
+            return; // more bytes than the size, which finalize will refuse; past the size, there's nothing to hash them into
+        }
+
+        // first, for the tip hash, we don't have random access through the file, but we do through this box!
+        for (start, end) in hash_stripe_overlap(stripe, &self.stripes) {
+            self.tips.add(&Data::from_array(
+                &delivery[count_usize(start - stripe.0)..count_usize(end - stripe.0)],
+            )); // subtract box address to clip in data
+        }
+
+        // second, for the piece hash, shovel bytes from the box into the piece until the box is empty 🪏
+        let mut shoveled = 0; // we move this index over the bytes in the box as we process them
+        while shoveled < n {
+            let shovel = (n - shoveled).min(self.piece_size - self.piece.len());
+            self.piece
+                .extend_from_slice(&delivery[shoveled..shoveled + shovel]);
+            shoveled += shovel;
+            if self.piece.len() == self.piece_size {
+                let full_piece =
+                    std::mem::replace(&mut self.piece, Vec::with_capacity(self.piece_size));
+                self.pieces.add(&sha256(&Data::from(full_piece)));
+            }
+        }
+    }
+
+    /// Both hashes of the pieces so far, from a copy, so the hasher can take more, or an error because they didn't add up to the size.
+    pub fn finalize(&self) -> std::io::Result<FujiHashes> {
+        if self.address != self.size {
+            let kind = if self.address < self.size {
+                std::io::ErrorKind::UnexpectedEof // the pieces ended early
+            } else {
+                std::io::ErrorKind::InvalidData
             };
-
-            // a new delivery of bytes from the stream has arrived! 📦
-            let delivery = &buffer[..n];
-            let stripe = (address, address + n as u64); // where in the stream this box of data is
-            address += n as u64; // outside the box, move address past this box to use to mark the start of the next one
-            if address > size {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("the stream is longer than the {size} bytes it was said to be"),
-                ));
-            }
-
-            // first, for the tip hash, we don't have random access through the file, but we do through this box!
-            for (start, end) in hash_stripe_overlap(stripe, &measure_tips.stripes) {
-                tips.add(&Data::from_array(
-                    &delivery[count_usize(start - stripe.0)..count_usize(end - stripe.0)],
-                )); // subtract box address to clip in data
-            }
-
-            // second, for the piece hash, shovel bytes from the box into the piece until the box is empty 🪏
-            let mut shoveled = 0; // we move this index over the bytes in the box as we process them
-            while shoveled < n {
-                let shovel = (n - shoveled).min(piece_size - piece.len());
-                piece.extend_from_slice(&delivery[shoveled..shoveled + shovel]);
-                shoveled += shovel;
-                if piece.len() == piece_size {
-                    let full_piece = std::mem::replace(&mut piece, Vec::with_capacity(piece_size));
-                    hash_piece(&mut pieces, &mut status, full_piece, &mut on_progress);
-                }
-            }
-        }
-
-        // most files will end with a fragment piece smaller than a full piece
-        if !piece.is_empty() {
-            hash_piece(&mut pieces, &mut status, piece, &mut on_progress);
-        }
-        if status.hashed_size != size {
             return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
+                kind,
                 format!(
-                    "the stream was {} bytes, not the {size} it was said to be",
-                    status.hashed_size
+                    "the pieces were {} bytes, not the {} they were said to be",
+                    self.address, self.size
                 ),
             ));
         }
 
-        // hash the summaries of the file in the bins
-        status.piece_hash = Some(sha256(&full(&pieces)));
-        status.tip_hash = Some(sha256(&full(&tips)));
-        finish(&mut status);
-        on_progress(&status);
-        Ok(status)
+        // most files will end with a fragment piece smaller than a full piece; hash it into a copy of the summary, so the hasher is unchanged and finalize can be asked again
+        let mut summary = self.pieces.clone();
+        if !self.piece.is_empty() {
+            summary.add(&sha256(&Data::from_array(&self.piece)));
+        }
+
+        // hash the summaries of the file in the bins, which must be exactly full, a check on our prediction of how much data we'd hash
+        Ok(FujiHashes {
+            tip_hash: sha256(&full(&self.tips)),
+            piece_hash: sha256(&full(&summary)),
+        })
     }
 }
 
-/// Hash a piece and add its hash to the summary, then say so.
-fn hash_piece(
-    pieces: &mut Bin,
-    status: &mut HashStatus,
-    piece: Vec<u8>,
-    on_progress: &mut impl FnMut(&HashStatus),
-) {
-    status.hashed_size += piece.len() as u64;
-    pieces.add(&sha256(&Data::from(piece)));
-    status.update_time = now();
-    on_progress(status);
+// the fuji hasher is an io::Write too, like the hashers above; a write never fails, and finalize tells of too many bytes or too few
+impl std::io::Write for FujiHasher {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.feed(data);
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// The Data a Bin holds, which must be exactly full; a Bin that isn't means this code predicted wrong how much data it would hash, a bug here.

@@ -113,6 +113,16 @@ fn run(call: &str, args: &[Value]) -> Result<Value, String> {
                 "pieceHash": base16(&status.piece_hash.expect("a finished hash")),
             }))
         }
+        "FujiHasher" => {
+            let h = protocol(args.get(2))?.fuji_hasher(count(args, 0)?);
+            let hashes = fed(h, crate::FujiHasher::update, &pieces(args, 1)?)
+                .finalize()
+                .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "tipHash": base16(&hashes.tip_hash),
+                "pieceHash": base16(&hashes.piece_hash),
+            }))
+        }
         _ => Err(format!("unknown function: {call}")),
     }
 }

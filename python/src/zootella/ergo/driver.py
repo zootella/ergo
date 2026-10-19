@@ -15,6 +15,7 @@ from zootella.ergo import (
     TAG_LENGTH,
     Bin,
     Data,
+    FujiHasher,
     HashMeasurement,
     HashProtocol,
     HashUnit,
@@ -95,6 +96,9 @@ functions = {
     "hashStream": lambda pieces, protocol=None: _hashed_stream(
         pieces, _protocol(protocol)
     ),
+    "FujiHasher": lambda size, pieces, protocol=None: _fed_fuji(
+        FujiHasher(size, _protocol(protocol)), pieces
+    ),
 }
 
 
@@ -138,6 +142,14 @@ def _hashed_stream(pieces: list[Data], protocol: HashProtocol) -> dict:
     size = sum(p.size() for p in pieces)
     status = hash_stream(_Boxes(pieces), size, protocol)
     return {"tipHash": status.tip_hash, "pieceHash": status.piece_hash}
+
+
+def _fed_fuji(h: FujiHasher, pieces: list[Data]) -> dict:
+    """FujiHasher takes the size it's told, the pieces to feed it in order, and a protocol, and answers both hashes, or raises when the pieces don't add up to the size."""
+    for piece in pieces:
+        h.update(piece)
+    hashes = h.digest()
+    return {"tipHash": hashes.tip_hash, "pieceHash": hashes.piece_hash}
 
 
 def _mulberry_data(seed: int, length: int) -> Data:

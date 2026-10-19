@@ -63,6 +63,12 @@ const adapters = {
     let status = await ergo.hashStream({ stream, size, protocol })
     return { tipHash: status.tipHash, pieceHash: status.pieceHash }
   },
+  //a FujiHasher takes the size it's told, the pieces to feed it in order, and a protocol, and answers both hashes, or refuses when the pieces don't add up to the size
+  FujiHasher: (size, pieces, protocol) => {
+    let h = ergo.FujiHasher({ size, protocol })
+    for (let piece of pieces) h.update(piece) //not awaited, so the vectors prove the hasher keeps them in order
+    return h.digest()
+  },
 }
 function fed(h, pieces) {
   for (let piece of pieces) h.update(piece)
