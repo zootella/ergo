@@ -3,7 +3,7 @@ name = "zootella-ergo"
 version = "0.1.2"
 edition = "2024"
 rust-version = "1.85"
-description = "Simple, dependency-free helper functions, the same in JavaScript, Python, Rust, and Go."
+description = "Simple helper functions, the same in JavaScript, Python, Rust, and Go."
 license = "MIT"
 homepage = "https://zootella.com"
 repository = "https://github.com/zootella/ergo"
@@ -13,8 +13,11 @@ categories = ["value-formatting", "date-and-time"]
 exclude = ["tests/"] # the vector reader needs the shared tests directory beside this crate in the repository, which a published crate doesn't have
 
 [dependencies]
+blake3 = "1.8" # BLAKE3's official implementation, from its authors
 getrandom = "0.4" # the operating system's random source, which the standard library doesn't expose yet; the crate the ecosystem's randomness rests on
 serde_json = { version = "1", optional = true }
+sha1 = "0.11" # SHA-1 and SHA-256 from RustCrypto, since the standard library has no cryptographic hashes
+sha2 = "0.11"
 
 [features]
 driver = ["dep:serde_json"]

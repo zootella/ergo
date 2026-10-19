@@ -1,5 +1,10 @@
 //ergo, short for ergonomic: simple helper functions, the same in javascript, python, rust, and go
 
+//noble's hashes, plain javascript that runs the same in a page, a web worker, and node; the hash section below says why they're here
+import { sha1 as nobleSha1 } from '@noble/hashes/legacy.js'
+import { sha256 as nobleSha256 } from '@noble/hashes/sha2.js'
+import { blake3 as nobleBlake3 } from '@noble/hashes/blake3.js'
+
 //      _
 //  ___(_)_______
 // / __| |_  / _ \
@@ -223,4 +228,54 @@ export function hasTag(s) {
 export function checkTag(s) {
   if (!hasTag(s)) throw new Error(`not a tag: ${JSON.stringify(s)}`)
   return s
+}
+
+//  _               _
+// | |__   __ _ ___| |__
+// | '_ \ / _` / __| '_ \
+// | | | | (_| \__ \ | | |
+// |_| |_|\__,_|___/_| |_|
+//
+
+/*
+Three hashes, each the one the world already knows. SHA-1 is the oldest, the one older manifests name a file by and git names its objects with. It's broken for collisions, two different inputs made to share a hash on purpose, so use it to match a hash that already exists, never to protect anything. SHA-256 is the standard everywhere today. BLAKE3 is the newest, built for speed as a tree, so pieces of one input can hash on many cores at once, and it's the one to name a file by for years to come.
+
+Each hash comes in two forms that give the same answer. The function takes all the bytes at once, like sha256(data), for data already in memory. The hasher takes them a piece at a time, as a file or a stream delivers them: make one with Sha256(), call update with each piece in order, and call digest for the hash. A file of any size hashes this way in the memory of one piece, and a single read of the file can feed all three hashers. Digest doesn't finish a hasher: update it again and digest again for the hash of everything so far.
+
+The platform's Web Crypto has SHA-1 and SHA-256, but only all at once, from a promise, and no BLAKE3 at all, so this edition uses noble's hashes for all three: plain JavaScript with no dependencies of its own, the same in a page, a web worker, and Node. It's synchronous, so a page with a large file should hash in a web worker, or between the reads of a stream, which give the page a moment between pieces. Each edition takes a hash from its platform where the platform has it in both forms, and otherwise from the official implementation or the best known one, and the shared vectors and the fuzz test hold all four to the same answers.
+*/
+
+//the SHA-1 hash of data, a Uint8Array, as 20 bytes; for matching a hash that already exists, like an older manifest's, since SHA-1 is broken for collisions
+export function sha1(data) {
+  return nobleSha1(data)
+}
+//the SHA-256 hash of data, a Uint8Array, as 32 bytes
+export function sha256(data) {
+  return nobleSha256(data)
+}
+//the BLAKE3 hash of data, a Uint8Array, as 32 bytes
+export function blake3(data) {
+  return nobleBlake3(data)
+}
+
+//a SHA-1 hasher: update(piece) with each piece in order, then digest() for the same 20 bytes sha1 gives all at once; digest doesn't finish it, so update again and digest again for the hash of everything so far
+export function Sha1() {
+  return _hasher(nobleSha1.create())
+}
+//a SHA-256 hasher, the same way, for 32 bytes
+export function Sha256() {
+  return _hasher(nobleSha256.create())
+}
+//a BLAKE3 hasher, the same way, for 32 bytes
+export function Blake3() {
+  return _hasher(nobleBlake3.create())
+}
+//wrap one of noble's hashers in ours, which has just the two methods every edition shares
+function _hasher(h) {
+  let o = {}
+  o.update = (data) => {
+    h.update(data) //noble's update returns itself for chaining; ours returns nothing, like the other three editions'
+  }
+  o.digest = () => h.clone().digest() //from a copy, so the hasher keeps going, where noble's own digest would end it
+  return o
 }

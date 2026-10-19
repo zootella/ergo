@@ -10,9 +10,16 @@ import time
 import pytest
 
 from zootella.ergo import (
+    BLAKE3,
+    SHA1,
+    SHA256,
+    Size,
     Time,
+    blake3,
     has_tag,
     iso_to_tick,
+    sha1,
+    sha256,
     tag,
     text_to_tick,
     tick_to_iso,
@@ -71,3 +78,29 @@ def test_fuzz_tag() -> None:
     print(
         f"\npython made {count} tags in {seconds:g} seconds, {round(count / seconds)} a second, each checked with has_tag"
     )
+
+
+@pytest.mark.skipif(seconds <= 0, reason="set ERGO_FUZZ to a number of seconds")
+def test_fuzz_hash() -> None:
+    """Each hash as fast as this edition can, on one mebibyte of random bytes again and again, and once a piece at a time to check it agrees."""
+    data = os.urandom(Size.MB)
+    hashes = [
+        ("sha1", sha1, SHA1),
+        ("sha256", sha256, SHA256),
+        ("blake3", blake3, BLAKE3),
+    ]
+    share = seconds / len(hashes)  # an even share of the seconds for each hash
+    said = []
+    for name, f, hasher in hashes:
+        stop = time.perf_counter() + share
+        last, count = f(data), 1  # at least once, however few the seconds
+        while time.perf_counter() < stop:
+            last = f(data)
+            count += 1
+        h = hasher()
+        # and once a piece at a time, at a split that lines up with nothing, which must agree
+        h.update(data[:1000])
+        h.update(data[1000:])
+        assert h.digest() == last
+        said.append(f"{name} {round(count / share)} MiB a second")
+    print(f"\npython hashed one mebibyte again and again: {', '.join(said)}")

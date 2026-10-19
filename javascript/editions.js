@@ -10,10 +10,9 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..') //the repositor
 //how to launch each foreign driver; each command compiles on first use, and the toolchain caches it after that
 const commands = {
   python: {
-    command: 'python3',
-    args: ['-m', 'zootella.ergo.driver'],
+    command: 'uv',
+    args: ['run', '--quiet', 'python', '-m', 'zootella.ergo.driver'], //in the edition's own environment, which has its dependency, blake3, and the edition itself installed
     cwd: 'python',
-    env: { PYTHONPATH: 'src' },
   },
   rust: {
     command: 'cargo',

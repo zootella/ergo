@@ -1,6 +1,6 @@
 # ergo
 
-Simple, dependency-free helper functions, the same in JavaScript, Python, Rust, and Go.
+Simple helper functions, the same in JavaScript, Python, Rust, and Go.
 
 |            | Install                               |
 | ---------- | ------------------------------------- |

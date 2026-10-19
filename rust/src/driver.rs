@@ -34,6 +34,28 @@ fn run(call: &str, args: &[Value]) -> Result<Value, String> {
         "Tag" => Ok(json!(crate::tag())),
         "hasTag" => Ok(json!(crate::has_tag(text(args, 0)?))),
         "checkTag" => Ok(json!(crate::check_tag(text(args, 0)?))),
+        "sha1" => Ok(base16(&crate::sha1(&bytes(args, 0)?))),
+        "sha256" => Ok(base16(&crate::sha256(&bytes(args, 0)?))),
+        "blake3" => Ok(base16(&crate::blake3(&bytes(args, 0)?))),
+        "Sha1" => Ok(base16(
+            &fed(crate::Sha1::new(), crate::Sha1::update, &pieces(args, 0)?).finalize(),
+        )),
+        "Sha256" => Ok(base16(
+            &fed(
+                crate::Sha256::new(),
+                crate::Sha256::update,
+                &pieces(args, 0)?,
+            )
+            .finalize(),
+        )),
+        "Blake3" => Ok(base16(
+            &fed(
+                crate::Blake3::new(),
+                crate::Blake3::update,
+                &pieces(args, 0)?,
+            )
+            .finalize(),
+        )),
         _ => Err(format!("unknown function: {call}")),
     }
 }
@@ -62,6 +84,64 @@ fn text(args: &[Value], i: usize) -> Result<&str, String> {
     args.get(i)
         .and_then(Value::as_str)
         .ok_or_else(|| format!("argument {i} must be text"))
+}
+
+/// A hasher in the protocol takes one argument, a list of pieces, and answers the hash of all of them fed in order, so a vector pins the piece-at-a-time form without the harness keeping an object between calls. Each piece goes through the hasher's own update, empty ones included, which io::Write's write_all would skip.
+fn fed<H>(mut h: H, update: fn(&mut H, &[u8]), pieces: &[Vec<u8>]) -> H {
+    for piece in pieces {
+        update(&mut h, piece);
+    }
+    h
+}
+
+/// Argument i as bytes, from either tagged form, or an error naming the argument.
+fn bytes(args: &[Value], i: usize) -> Result<Vec<u8>, String> {
+    args.get(i)
+        .and_then(tagged)
+        .ok_or_else(|| format!("argument {i} must be bytes"))
+}
+
+/// Argument i as a list of pieces of bytes, or an error naming the argument.
+fn pieces(args: &[Value], i: usize) -> Result<Vec<Vec<u8>>, String> {
+    args.get(i)
+        .and_then(Value::as_array)
+        .and_then(|a| a.iter().map(tagged).collect())
+        .ok_or_else(|| format!("argument {i} must be a list of pieces of bytes"))
+}
+
+/// Bytes cross the protocol as tagged json: {"base16": "616263"} is those three bytes, and {"repeat": "61", "length": 1000000} is those bytes repeated to that length, so a vector can name a million bytes in a line. None if v is neither.
+fn tagged(v: &Value) -> Option<Vec<u8>> {
+    if let Some(s) = v["base16"].as_str() {
+        return from_base16(s);
+    }
+    let unit = from_base16(v["repeat"].as_str()?)?;
+    let length = v["length"].as_u64().filter(|&n| n < 1 << 53)?; // a count within the integer ceiling
+    if unit.is_empty() {
+        return None; // a unit of at least one byte, the same rule in every edition
+    }
+    Some(
+        unit.iter()
+            .copied()
+            .cycle()
+            .take(usize::try_from(length).ok()?)
+            .collect(),
+    )
+}
+
+/// Bytes from lowercase or uppercase base16, or None if s has an odd length or a character that isn't a digit of base16.
+fn from_base16(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None; // digits only, since from_str_radix would also take a leading plus sign, and ascii, so byte positions below are character positions
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
+}
+
+/// A result that is bytes, tagged the first way, in lowercase base16.
+fn base16(b: &[u8]) -> Value {
+    json!({"base16": b.iter().map(|x| format!("{x:02x}")).collect::<String>()})
 }
 
 /// The message a panic carried, which is a String from a formatted assert or a &str from a literal.

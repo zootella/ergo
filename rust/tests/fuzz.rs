@@ -2,8 +2,12 @@
 //!
 //! Skipped otherwise, so cargo test stays deterministic and fast. Run with ERGO_FUZZ=4 cargo test --release --test fuzz -- --nocapture, where --release measures the edition as it ships and --nocapture shows the count it reached.
 
+use std::hint::black_box;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use zootella_ergo::{has_tag, iso_to_tick, tag, text_to_tick, tick_to_iso, tick_to_text, time};
+use zootella_ergo::{
+    Blake3, Sha1, Sha256, blake3, has_tag, iso_to_tick, sha1, sha256, size, tag, text_to_tick,
+    tick_to_iso, tick_to_text, time,
+};
 
 /// The seconds ERGO_FUZZ names, or zero when it doesn't, which each test takes as its cue to return without running.
 fn fuzz_seconds() -> f64 {
@@ -80,5 +84,88 @@ fn fuzz_tag() {
     println!(
         "rust made {count} tags in {seconds} seconds, {} a second, each checked with has_tag",
         (count as f64 / seconds).round()
+    );
+}
+
+/// Each hash as fast as this edition can, on one mebibyte of random bytes again and again, and once a piece at a time to check it agrees.
+#[test]
+fn fuzz_hash() {
+    let seconds = fuzz_seconds();
+    if seconds <= 0.0 {
+        return; // skipped: set ERGO_FUZZ to a number of seconds
+    }
+    let mut x = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock is past 1970")
+        .as_nanos() as u64
+        | 1; // xorshift state, as above
+    let data: Vec<u8> = (0..size::MB)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect();
+    // each hash by name, all at once and in two pieces, as vectors so the 20 bytes of sha1 and the 32 of the others compare alike
+    type Hash = fn(&[u8]) -> Vec<u8>;
+    let hashes: [(&str, Hash, Hash); 3] = [
+        (
+            "sha1",
+            |d| sha1(d).to_vec(),
+            |d| {
+                let mut h = Sha1::new();
+                h.update(&d[..1000]);
+                h.update(&d[1000..]);
+                h.finalize().to_vec()
+            },
+        ),
+        (
+            "sha256",
+            |d| sha256(d).to_vec(),
+            |d| {
+                let mut h = Sha256::new();
+                h.update(&d[..1000]);
+                h.update(&d[1000..]);
+                h.finalize().to_vec()
+            },
+        ),
+        (
+            "blake3",
+            |d| blake3(d).to_vec(),
+            |d| {
+                let mut h = Blake3::new();
+                h.update(&d[..1000]);
+                h.update(&d[1000..]);
+                h.finalize().to_vec()
+            },
+        ),
+    ];
+    let share = seconds / hashes.len() as f64; // an even share of the seconds for each hash
+    let mut said = Vec::new();
+    for (name, all, pieces) in hashes {
+        let stop = Instant::now() + Duration::from_secs_f64(share);
+        let mut count = 0u64;
+        let last = loop {
+            let h = black_box(all(black_box(&data))); // black_box on both sides, so the optimizer can neither hash the same input once nor drop a result it sees unused
+            count += 1;
+            if Instant::now() >= stop {
+                break h; // at least once, however few the seconds
+            }
+        };
+        // and once a piece at a time, at a split that lines up with nothing, which must agree
+        assert_eq!(
+            pieces(&data),
+            last,
+            "{name} disagreed with itself a piece at a time"
+        );
+        said.push(format!(
+            "{name} {} MiB a second",
+            (count as f64 / share).round()
+        ));
+    }
+    println!(
+        "rust hashed one mebibyte again and again: {}",
+        said.join(", ")
     );
 }

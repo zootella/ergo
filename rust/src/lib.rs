@@ -403,3 +403,135 @@ pub fn check_tag(s: &str) -> &str {
     assert!(has_tag(s), "not a tag: {s:?}");
     s
 }
+
+// hash
+
+// Three hashes, each the one the world already knows. SHA-1 is the oldest, the one older manifests name a file by and git names its objects with. It's broken for collisions, two different inputs made to share a hash on purpose, so use it to match a hash that already exists, never to protect anything. SHA-256 is the standard everywhere today. BLAKE3 is the newest, built for speed as a tree, so pieces of one input can hash on many cores at once, and it's the one to name a file by for years to come.
+//
+// Each hash comes in two forms that give the same answer. The function takes all the bytes at once, like sha256(data), for data already in memory. The hasher takes them a piece at a time, as a file or a stream delivers them: make one with Sha256::new(), call update with each piece in order, and call finalize for the hash. A file of any size hashes this way in the memory of one piece, and a single read of the file can feed all three hashers. Finalize doesn't finish a hasher, as in the blake3 crate: update it again and finalize again for the hash of everything so far. Each hasher is also an io::Write, so io::copy can feed one straight from a reader.
+//
+// The standard library has no cryptographic hashes, so SHA-1 and SHA-256 come from RustCrypto's sha1 and sha2, and BLAKE3 from the blake3 crate, the official implementation by BLAKE3's authors. Each edition takes a hash from its platform where the platform has it in both forms, and otherwise from the official implementation or the best known one, and the shared vectors and the fuzz test hold all four to the same answers.
+
+/// The SHA-1 hash of `data`, 20 bytes. For matching a hash that already exists, like an older manifest's, since SHA-1 is broken for collisions.
+///
+/// ```
+/// let h = zootella_ergo::sha1(b"abc");
+/// assert_eq!(h[..4], [0xa9, 0x99, 0x3e, 0x36]);
+/// ```
+pub fn sha1(data: &[u8]) -> [u8; 20] {
+    <sha1::Sha1 as sha1::Digest>::digest(data).into()
+}
+
+/// The SHA-256 hash of `data`, 32 bytes.
+///
+/// ```
+/// let h = zootella_ergo::sha256(b"abc");
+/// assert_eq!(h[..4], [0xba, 0x78, 0x16, 0xbf]);
+/// ```
+pub fn sha256(data: &[u8]) -> [u8; 32] {
+    <sha2::Sha256 as sha2::Digest>::digest(data).into()
+}
+
+/// The BLAKE3 hash of `data`, 32 bytes.
+///
+/// ```
+/// let h = zootella_ergo::blake3(b"abc");
+/// assert_eq!(h[..4], [0x64, 0x37, 0xb3, 0xac]);
+/// ```
+pub fn blake3(data: &[u8]) -> [u8; 32] {
+    blake3::hash(data).into()
+}
+
+/// A SHA-1 hasher, a piece at a time: [`update`](Sha1::update) with each piece in order, then [`finalize`](Sha1::finalize) for the same 20 bytes [`sha1`] gives all at once.
+///
+/// ```
+/// let mut h = zootella_ergo::Sha1::new();
+/// h.update(b"a");
+/// assert_eq!(h.finalize(), zootella_ergo::sha1(b"a")); // the hash so far, which leaves the hasher going
+/// h.update(b"bc");
+/// assert_eq!(h.finalize(), zootella_ergo::sha1(b"abc"));
+/// ```
+#[derive(Clone, Debug, Default)]
+pub struct Sha1(sha1::Sha1);
+
+impl Sha1 {
+    /// A new hasher, with nothing in it yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Hash the next piece.
+    pub fn update(&mut self, data: &[u8]) {
+        sha1::Digest::update(&mut self.0, data);
+    }
+    /// The hash of every piece so far, from a copy, so the hasher can take more.
+    pub fn finalize(&self) -> [u8; 20] {
+        sha1::Digest::finalize(self.0.clone()).into()
+    }
+}
+
+/// A SHA-256 hasher, the same way, for 32 bytes.
+#[derive(Clone, Debug, Default)]
+pub struct Sha256(sha2::Sha256);
+
+impl Sha256 {
+    /// A new hasher, with nothing in it yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Hash the next piece.
+    pub fn update(&mut self, data: &[u8]) {
+        sha2::Digest::update(&mut self.0, data);
+    }
+    /// The hash of every piece so far, from a copy, so the hasher can take more.
+    pub fn finalize(&self) -> [u8; 32] {
+        sha2::Digest::finalize(self.0.clone()).into()
+    }
+}
+
+/// A BLAKE3 hasher, the same way, for 32 bytes.
+#[derive(Clone, Debug, Default)]
+pub struct Blake3(blake3::Hasher);
+
+impl Blake3 {
+    /// A new hasher, with nothing in it yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Hash the next piece.
+    pub fn update(&mut self, data: &[u8]) {
+        self.0.update(data);
+    }
+    /// The hash of every piece so far; the blake3 crate's finalize leaves its hasher able to take more on its own.
+    pub fn finalize(&self) -> [u8; 32] {
+        self.0.finalize().into()
+    }
+}
+
+// each hasher is an io::Write, so io::copy can feed one from a file or any other reader; hashing never fails, so neither does a write
+impl std::io::Write for Sha1 {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.update(data);
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl std::io::Write for Sha256 {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.update(data);
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl std::io::Write for Blake3 {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.update(data);
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}

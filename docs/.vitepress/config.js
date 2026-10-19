@@ -3,7 +3,7 @@ import { tabsMarkdownPlugin } from 'vitepress-plugin-tabs'
 
 export default defineConfig({
   title: 'ergo',
-  description: 'Simple, dependency-free helper functions, the same in JavaScript, Python, Rust, and Go.',
+  description: 'Simple helper functions, the same in JavaScript, Python, Rust, and Go.',
   base: '/ergo/', //for now the site is published at zootella.github.io/ergo; when dns for zootella.com points at github pages, this becomes '/' and docs/public/CNAME returns with the domain in it; construction.md has the steps
   sitemap: { hostname: 'https://zootella.github.io/ergo' },
   markdown: {
@@ -21,6 +21,7 @@ export default defineConfig({
           { text: 'Time', link: '/time' },
           { text: 'Tick', link: '/tick' },
           { text: 'Tag', link: '/tag' },
+          { text: 'Hash', link: '/hash' },
         ],
       },
     ],

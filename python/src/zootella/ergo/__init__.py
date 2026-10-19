@@ -40,12 +40,35 @@ False
 True
 
 # endregion tag
+
+# region hash
+>>> from zootella.ergo import BLAKE3, SHA1, SHA256, Size, sha256
+>>> sha256(b"hello").hex()  # all at once, for bytes already in memory: 32 bytes
+'2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824'
+>>> import io
+>>> file = io.BytesIO(b"hello")  # or open(path, "rb"), a file of any size
+>>> hashers = [SHA1(), SHA256(), BLAKE3()]  # or a piece at a time, all three from one read of the file
+>>> while piece := file.read(64 * Size.KB):
+...     for h in hashers:
+...         h.update(piece)
+>>> for h in hashers:
+...     print(h.digest().hex())
+aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d
+2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f
+
+# endregion hash
 """
 
+import hashlib
 import math
 import re
 import secrets
+from collections.abc import Buffer
 from datetime import UTC, datetime, timedelta
+from typing import Protocol
+
+from blake3 import blake3 as _blake3
 
 # size
 
@@ -303,3 +326,70 @@ def check_tag(s: str) -> str:
     if not has_tag(s):
         raise ValueError(f"not a tag: {s!r}")
     return s
+
+
+# hash
+
+# Three hashes, each the one the world already knows. SHA-1 is the oldest, the one older manifests name a file by and git names its objects with. It's broken for collisions, two different inputs made to share a hash on purpose, so use it to match a hash that already exists, never to protect anything. SHA-256 is the standard everywhere today. BLAKE3 is the newest, built for speed as a tree, so pieces of one input can hash on many cores at once, and it's the one to name a file by for years to come.
+#
+# Each hash comes in two forms that give the same answer. The function takes all the bytes at once, like sha256(data), for data already in memory. The hasher takes them a piece at a time, as a file or a stream delivers them: make one with SHA256(), call update with each piece in order, and call digest for the hash. A file of any size hashes this way in the memory of one piece, and a single read of the file can feed all three hashers. Digest doesn't finish a hasher, as in hashlib: update it again and digest again for the hash of everything so far.
+#
+# hashlib has SHA-1 and SHA-256, on OpenSSL or verified code of its own, and no BLAKE3, which CPython declined to add, so BLAKE3 comes from the blake3 package, the official Python binding to the official Rust implementation. Each edition takes a hash from its platform where the platform has it in both forms, and otherwise from the official implementation or the best known one, and the shared vectors and the fuzz test hold all four to the same answers.
+
+
+def sha1(data: Buffer) -> bytes:
+    """The SHA-1 hash of data, 20 bytes; for matching a hash that already exists, like an older manifest's, since SHA-1 is broken for collisions."""
+    return hashlib.sha1(data).digest()
+
+
+def sha256(data: Buffer) -> bytes:
+    """The SHA-256 hash of data, 32 bytes."""
+    return hashlib.sha256(data).digest()
+
+
+def blake3(data: Buffer) -> bytes:
+    """The BLAKE3 hash of data, 32 bytes."""
+    return _blake3(data).digest()
+
+
+class _HashObject(Protocol):
+    """What hashlib's hashers and the blake3 package's have in common, and all the hashers below need of them."""
+
+    def update(self, data: Buffer, /) -> None: ...
+    def digest(self) -> bytes: ...
+
+
+class _Hasher:
+    """The shape the three hashers below share: update with each piece in order, then digest for the hash of them all."""
+
+    def __init__(self, h: _HashObject) -> None:
+        self._h = h
+
+    def update(self, data: Buffer) -> None:
+        """Hash the next piece."""
+        self._h.update(data)
+
+    def digest(self) -> bytes:
+        """The hash of every piece so far."""
+        return self._h.digest()
+
+
+class SHA1(_Hasher):
+    """A SHA-1 hasher, a piece at a time, for the same 20 bytes sha1 gives all at once."""
+
+    def __init__(self) -> None:
+        super().__init__(hashlib.sha1())
+
+
+class SHA256(_Hasher):
+    """A SHA-256 hasher, the same way, for 32 bytes."""
+
+    def __init__(self) -> None:
+        super().__init__(hashlib.sha256())
+
+
+class BLAKE3(_Hasher):
+    """A BLAKE3 hasher, the same way, for 32 bytes."""
+
+    def __init__(self) -> None:
+        super().__init__(_blake3())

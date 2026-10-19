@@ -1,9 +1,13 @@
 package ergo_test
 
 import (
+	"bytes"
+	"fmt"
+	"hash"
 	"math/rand"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,4 +84,45 @@ func TestFuzzTag(t *testing.T) {
 		count++
 	}
 	t.Logf("go made %d tags in %g seconds, %.0f a second, each checked with HasTag", count, seconds, float64(count)/seconds)
+}
+
+// TestFuzzHash runs each hash as fast as this edition can, on one mebibyte of random bytes again and again, and once a piece at a time to check it agrees.
+func TestFuzzHash(t *testing.T) {
+	seconds := fuzzSeconds(t)
+	data := make([]byte, ergo.MB)
+	for i := range data {
+		data[i] = byte(rand.Intn(256))
+	}
+	// each hash by name, all at once as a slice so the 20 bytes of SHA1 and the 32 of the others compare alike, and its hasher
+	hashes := []struct {
+		name   string
+		all    func([]byte) []byte
+		hasher func() hash.Hash
+	}{
+		{"sha1", func(d []byte) []byte { h := ergo.SHA1(d); return h[:] }, ergo.NewSHA1},
+		{"sha256", func(d []byte) []byte { h := ergo.SHA256(d); return h[:] }, ergo.NewSHA256},
+		{"blake3", func(d []byte) []byte { h := ergo.Blake3(d); return h[:] }, ergo.NewBlake3},
+	}
+	share := seconds / float64(len(hashes)) // an even share of the seconds for each hash
+	var said []string
+	for _, h := range hashes {
+		stop := time.Now().Add(time.Duration(share * float64(time.Second)))
+		count := 0
+		var last []byte
+		for {
+			last = h.all(data)
+			count++
+			if !time.Now().Before(stop) {
+				break // at least once, however few the seconds
+			}
+		}
+		p := h.hasher() // and once a piece at a time, at a split that lines up with nothing, which must agree
+		p.Write(data[:1000])
+		p.Write(data[1000:])
+		if !bytes.Equal(p.Sum(nil), last) {
+			t.Fatalf("%s disagreed with itself a piece at a time", h.name)
+		}
+		said = append(said, fmt.Sprintf("%s %.0f MiB a second", h.name, float64(count)/share))
+	}
+	t.Logf("go hashed one mebibyte again and again: %s", strings.Join(said, ", "))
 }

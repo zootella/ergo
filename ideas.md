@@ -4,7 +4,7 @@ Ideas beyond the core requirements of ergo, which are four editions, one test su
 
 ## The site runs the tests
 
-The documentation site runs the JavaScript edition's test suite in the visitor's browser and shows that it passes, front and center. An easter egg for the curious and a proof of concept for everyone: this library works, right here, inside the page you're reading. The vectors are JSON and the JavaScript edition runs in a browser on the platform alone, so the whole suite can run on the page with nothing installed.
+The documentation site runs the JavaScript edition's test suite in the visitor's browser and shows that it passes, front and center. An easter egg for the curious and a proof of concept for everyone: this library works, right here, inside the page you're reading. The vectors are JSON and the JavaScript edition runs in a browser, on the platform and plain JavaScript, so the whole suite can run on the page with nothing installed.
 
 ## A demonstration CLI
 

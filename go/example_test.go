@@ -2,6 +2,8 @@ package ergo_test
 
 import (
 	"fmt"
+	"io"
+	"strings"
 
 	ergo "github.com/zootella/ergo/go"
 )
@@ -49,3 +51,21 @@ func ExampleTag() {
 }
 
 // #endregion tag
+
+// #region hash
+func ExampleSHA256() {
+	d := ergo.SHA256([]byte("hello"))                                   // all at once, for bytes already in memory: 32 bytes
+	file := strings.NewReader("hello")                                  // or os.Open(path), a file of any size
+	h1, h256, hb3 := ergo.NewSHA1(), ergo.NewSHA256(), ergo.NewBlake3() // or a piece at a time, all three from one read of the file
+	if _, err := io.Copy(io.MultiWriter(h1, h256, hb3), file); err != nil {
+		panic(err) // a hasher never fails a write, so an error here is the file's
+	}
+	fmt.Printf("%x\n%x\n%x\n%x\n", d, h1.Sum(nil), h256.Sum(nil), hb3.Sum(nil))
+	// Output:
+	// 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+	// aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d
+	// 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+	// ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f
+}
+
+// #endregion hash

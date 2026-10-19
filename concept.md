@@ -1,6 +1,6 @@
 # ergo
 
-Ergo is short for ergonomic. It's a small library of helper functions that's easy to reach for: no dependencies, available the normal way in each language's module system, and the same in every language it ships in.
+Ergo is short for ergonomic. It's a small library of helper functions that's easy to reach for: few dependencies, and only ones its ecosystem already trusts, available the normal way in each language's module system, and the same in every language it ships in.
 
 ## Where it came from
 
@@ -33,11 +33,13 @@ The two are reconciled by deciding what each one owns. Sameness owns behavior, t
 
 The four editions are the same author writing fluently in four languages, not one text run through a translator. The meaning and the character are identical. The idiom is whatever a native would write. This is the core difficulty of ergo and its central triumph: one hand and one foot in each of the four, so a coder finds the same tools in every place, and every place looks correct and normal by that language's own rules, environment, patterns, and conventions. The sections below are this principle applied: to dependencies, to tests, and to the line between style and format.
 
-## What dependency-free means
+## What a dependency has to be
 
-The bar is that the JavaScript edition runs in a browser with nothing but the platform. That's the strict case, and it's where the whole of core.js already lives: Web Crypto, TextEncoder, ReadableStream, all globals.
+Every edition uses its platform first, and where the platform falls short, a library that experienced people in that ecosystem already have in most of their projects. The test isn't whether something is bundled. It's whether it's universally used and trusted, a no-brainer rather than a new target of scrutiny.
 
-The other three editions use their standard libraries, and where a standard library falls short, a library that experienced people in that ecosystem already have in most of their projects. The test isn't whether something is bundled. It's whether it's universally used and trusted, a no-brainer rather than a new target of scrutiny. Go's standard library covers everything. Python's covers hashing, HMAC, and PBKDF2, and the `cryptography` package covers the rest. Rust's standard library has no crypto at all, so the Rust edition brings in the RustCrypto crates.
+The JavaScript edition has the strictest bar. It runs completely in a browser tab and a web worker, so it never leans on Node, and its dependencies are plain JavaScript, never WebAssembly, which is harder to say is audited. Most of core.js lives on the platform alone: Web Crypto, TextEncoder, ReadableStream, all globals. Hashing is where the platform first fell short. Web Crypto has SHA-1 and SHA-256, but only all at once, from a promise, and no BLAKE3, so a page can't hash a large file through it without holding all of the file in memory at once, and that limit is what icarus's Fuji hashes were designed around, with their 4 MiB pieces. So the JavaScript edition's hashes are noble's: plain JavaScript with no dependencies of its own, its SHA-256 independently audited at version 1.0.0, in 2022, all three tested against the official vectors, and hashing a piece at a time.
+
+Go's standard library covers everything but BLAKE3, which comes from lukechampine.com/blake3. Python's covers SHA-1, SHA-256, HMAC, and PBKDF2; BLAKE3 comes from the official blake3 package, and the `cryptography` package covers the rest. Rust's standard library has no crypto at all, so the Rust edition brings in the RustCrypto crates, and the blake3 crate, BLAKE3's official implementation.
 
 ## One test suite
 
@@ -82,7 +84,7 @@ This separation is the mechanism behind the mid-career engineer test above. The 
 - One library, four natives. The shared suite enforces that the editions agree, and each ecosystem's own tools enforce that its edition belongs. Behavior, the words in the names, and the style guide's values are shared. Format, case, layout, packaging, test runner, example form, the mechanism for failing loudly, and the judgment of which dependencies are free are each language's own.
 - Round trips are one to one. Text to value to text is the identity, and so is value to text to value, for every text form ergo defines. Readers accept the canonical form only, which is the form ergo writes.
 - JavaScript first, published as @zootella/ergo. Then zootella-ergo on PyPI and crates.io, and github.com/zootella/ergo as a Go module.
-- Dependency-free means the JavaScript edition runs in a browser on the platform alone. Other editions use their standard libraries and universally trusted libraries: RustCrypto in Rust, cryptography in Python.
+- The platform first, and where it falls short, only libraries the ecosystem already trusts: noble in JavaScript, blake3 and later cryptography in Python, RustCrypto and blake3 in Rust, lukechampine.com/blake3 in Go. The JavaScript edition runs completely in a browser tab and a web worker, with no Node and no WebAssembly.
 - One test suite: JSON vectors read natively by all four editions, plus scripted tests in JavaScript under vitest that drive all four editions through a driver protocol. No hand-written tests in Python, Rust, or Go beyond the vector reader, the driver, and one fuzz loop each, the same loop in each language.
 - Style and format are separate. quad-style.md governs structure, names, comments, and factoring in every edition. Format is each language's standard formatter, run on save and checked in CI: Prettier, Ruff, rustfmt, gofmt.
 - The protocol's canonical function names are the JavaScript edition's, and each edition spells them in its own case: saySize4, say_size4, say_size4, SaySize4; Size.kb, Size.KB, size::KB, ergo.KB. A constant is a function with no arguments, so Size.kb is vectorable like anything else, and its dotted name is the protocol's.
@@ -98,7 +100,7 @@ This separation is the mechanism behind the mid-career engineer test above. The 
 
 ## Open
 
-- Bytes in the vector files and the driver protocol, and handles for objects like Bin and Outline. The first version of both, carrying only text, numbers, and booleans, is in construction.md and running.
+- Handles for objects like Bin and Outline in the driver protocol. Bytes arrived with the hashes, and construction.md has their tagged form; a hasher needed no handle, since a vector hands it its pieces as a list.
 - Whether a reader in JavaScript should refuse text it can't read with a value rather than a thrown Error. Text from outside is ordinary input, which the walled city of quad-style.md answers with values, as Rust and Go already do; raising stays native in Python, where `int("x")` raises. Tick zero is a real moment, so "the tick or false" is awkward.
 
 ## Later

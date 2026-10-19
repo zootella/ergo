@@ -3,12 +3,17 @@ package ergo
 
 import (
 	"crypto/rand"
+	"crypto/sha1"
+	"crypto/sha256"
 	"fmt"
+	"hash"
 	"math"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"lukechampine.com/blake3"
 )
 
 // Numbers of bytes in the binary units that memory and storage are measured in, 1024 to each rather than 1000, so 64*ergo.KB names what a bare 65536 would hide. Untyped, so they multiply an int, an int64, or a uint64 alike.
@@ -280,4 +285,40 @@ func CheckTag(s string) string {
 		panic(fmt.Sprintf("not a tag: %q", s))
 	}
 	return s
+}
+
+// Three hashes, each the one the world already knows. SHA-1 is the oldest, the one older manifests name a file by and git names its objects with. It's broken for collisions, two different inputs made to share a hash on purpose, so use it to match a hash that already exists, never to protect anything. SHA-256 is the standard everywhere today. BLAKE3 is the newest, built for speed as a tree, so pieces of one input can hash on many cores at once, and it's the one to name a file by for years to come.
+//
+// Each hash comes in two forms that give the same answer. The function takes all the bytes at once, like SHA256(data), for data already in memory. The hasher takes them a piece at a time, as a file or a stream delivers them: make one with NewSHA256, write each piece to it in order, and call Sum for the hash. It's the standard library's own hash.Hash, so io.Copy can feed it from a file, and io.MultiWriter can feed all three hashers from a single read. A file of any size hashes this way in the memory of one piece, and Sum doesn't finish a hasher: write more and Sum again for the hash of everything so far.
+//
+// The standard library has SHA-1 and SHA-256 and no BLAKE3, which x/crypto has yet to decide on, so BLAKE3 comes from lukechampine.com/blake3, the implementation written with x/crypto in mind. It already does what BLAKE3's tree allows, the one edition that does on its own: the subtrees of a large input hash on goroutines of their own, across every core. Each edition takes a hash from its platform where the platform has it in both forms, and otherwise from the official implementation or the best known one, and the shared vectors and the fuzz test hold all four to the same answers.
+
+// SHA1 is the SHA-1 hash of data, 20 bytes. It's for matching a hash that already exists, like an older manifest's, since SHA-1 is broken for collisions.
+func SHA1(data []byte) [20]byte {
+	return sha1.Sum(data)
+}
+
+// SHA256 is the SHA-256 hash of data, 32 bytes.
+func SHA256(data []byte) [32]byte {
+	return sha256.Sum256(data)
+}
+
+// Blake3 is the BLAKE3 hash of data, 32 bytes.
+func Blake3(data []byte) [32]byte {
+	return blake3.Sum256(data)
+}
+
+// NewSHA1 makes a SHA-1 hasher, a piece at a time: write each piece in order, then Sum for the same 20 bytes SHA1 gives all at once.
+func NewSHA1() hash.Hash {
+	return sha1.New()
+}
+
+// NewSHA256 makes a SHA-256 hasher, the same way, for 32 bytes.
+func NewSHA256() hash.Hash {
+	return sha256.New()
+}
+
+// NewBlake3 makes a BLAKE3 hasher, the same way, for 32 bytes.
+func NewBlake3() hash.Hash {
+	return blake3.New(32, nil) // 32 bytes of output and no key, the plain hash
 }

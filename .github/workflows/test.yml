@@ -30,7 +30,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
-          cache: false # the go module has no dependencies, so there's no go.sum to key a cache on and nothing to cache
+          cache-dependency-path: go/go.sum # which holds lukechampine.com/blake3 and the cpuid package it uses
 
       - name: go
         working-directory: go

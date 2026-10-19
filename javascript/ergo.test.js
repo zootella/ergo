@@ -12,6 +12,12 @@ import {
   hasTag,
   checkTag,
   tagLength,
+  sha1,
+  sha256,
+  blake3,
+  Sha1,
+  Sha256,
+  Blake3,
 } from './ergo.js'
 import { call } from './driver.js'
 import { startEditions, stopEditions } from './editions.js'
@@ -129,6 +135,62 @@ describe('Tag', () => {
   })
 })
 
+//  _               _
+// | |__   __ _ ___| |__
+// | '_ \ / _` / __| '_ \
+// | | | | (_| \__ \ | | |
+// |_| |_|\__,_|___/_| |_|
+//
+
+//lowercase base16, the form the world shows a hash in; a test can lean on node's Buffer, where the edition itself can't
+function hex(bytes) {
+  return Buffer.from(bytes).toString('hex')
+}
+
+//the three hashes by name, with the function that takes all the bytes at once and the hasher that takes a piece at a time
+const hashPairs = [
+  ['sha1', sha1, Sha1],
+  ['sha256', sha256, Sha256],
+  ['blake3', blake3, Blake3],
+]
+
+describe('hash', () => {
+  test('hashes bytes all at once, and a file a piece at a time', async () => {
+    // #region hash
+    let d = sha256(new TextEncoder().encode('hello')) //all at once, for bytes already in memory: 32 bytes
+    let file = new Blob(['hello']) //or a File the user chose, of any size
+    let hashers = [Sha1(), Sha256(), Blake3()] //or a piece at a time, all three from one read of the file
+    let reader = file.stream().getReader()
+    while (true) {
+      let { done, value } = await reader.read()
+      if (done) break
+      for (let h of hashers) h.update(value)
+    }
+    let [d1, d256, db3] = hashers.map((h) => h.digest())
+    // #endregion hash
+    expect(hex(d)).toBe(
+      '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824',
+    )
+    expect(hex(d1)).toBe('aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d')
+    expect(hex(d256)).toBe(hex(d))
+    expect(hex(db3)).toBe(
+      'ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f',
+    )
+  })
+  test("digest doesn't finish a hasher, which keeps going for the hash of everything so far", () => {
+    let a = new Uint8Array([0x61])
+    let ab = new Uint8Array([0x61, 0x62])
+    for (let [name, all, Hasher] of hashPairs) {
+      let h = Hasher()
+      h.update(a)
+      expect(hex(h.digest()), name).toBe(hex(all(a)))
+      expect(hex(h.digest()), name).toBe(hex(all(a))) //a second digest is the same answer
+      h.update(ab.subarray(1))
+      expect(hex(h.digest()), name).toBe(hex(all(ab))) //and the hasher took more after both
+    }
+  })
+})
+
 //           _ _ _   _
 //   ___  __| (_) |_(_) ___  _ __  ___
 //  / _ \/ _` | | __| |/ _ \| '_ \/ __|
@@ -217,6 +279,35 @@ function randomTick(center, radius) {
   return Math.min(Math.max(t, 0), lastTick)
 }
 
+//n random bytes; getRandomValues fills at most 65536 at a call, so fill in steps
+function randomBytes(n) {
+  let b = new Uint8Array(n)
+  for (let i = 0; i < n; i += 65536)
+    crypto.getRandomValues(b.subarray(i, Math.min(i + 65536, n)))
+  return b
+}
+//a random length, mostly short to land near the 64-byte blocks of the SHA hashes, sometimes long enough to cross several of BLAKE3's 1024-byte chunks
+function randomLength() {
+  let r = Math.random()
+  if (r < 0.5) return Math.floor(Math.random() * 200)
+  if (r < 0.8) return Math.floor(Math.random() * 3000)
+  return Math.floor(Math.random() * 20000)
+}
+//data cut into one to four pieces at random places, where a piece is empty when two cuts land together or at an end, and empty data is sometimes no pieces at all
+function randomPieces(data) {
+  let cuts = Array.from({ length: Math.floor(Math.random() * 4) }, () =>
+    Math.floor(Math.random() * (data.length + 1)),
+  ).sort((a, b) => a - b)
+  let pieces = []
+  let start = 0
+  for (let cut of [...cuts, data.length]) {
+    pieces.push(data.subarray(start, cut))
+    start = cut
+  }
+  if (data.length == 0 && Math.random() < 0.5) return [] //sometimes no pieces at all, which is also the empty input
+  return pieces
+}
+
 describe.skipIf(!fuzzSeconds)('fuzz', () => {
   test(
     'a random tick round-trips through both text forms in javascript alone, in-process',
@@ -257,6 +348,34 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
     (fuzzSeconds + 60) * Time.second,
   )
 
+  test(
+    'each hash runs as fast as the edition can, in javascript alone, in-process',
+    () => {
+      let data = randomBytes(Size.mb) //one mebibyte of random bytes, hashed again and again
+      let share = fuzzSeconds / hashPairs.length //an even share of the seconds for each hash
+      let said = []
+      for (let [name, all, Hasher] of hashPairs) {
+        let stop = Date.now() + share * Time.second
+        let count = 0
+        let last
+        do {
+          last = all(data)
+          count++
+        } while (Date.now() < stop) //at least once, however few the seconds
+        let h = Hasher()
+        h.update(data.subarray(0, 1000)) //and once a piece at a time, at a split that lines up with nothing, which must agree
+        h.update(data.subarray(1000))
+        if (hex(h.digest()) != hex(last))
+          throw new Error(`${name} disagreed with itself a piece at a time`)
+        said.push(`${name} ${Math.round(count / share)} MiB a second`)
+      }
+      console.log(
+        `javascript alone hashed one mebibyte again and again: ${said.join(', ')}`,
+      )
+    },
+    (fuzzSeconds + 60) * Time.second,
+  )
+
   describe('every edition', () => {
     let editions
     beforeAll(async () => {
@@ -289,6 +408,33 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
         }
         console.log(
           `every edition fuzzed ${cycles} ticks through both text forms in ${fuzzSeconds} seconds, ${Math.round(cycles / fuzzSeconds)} a second, each a round trip over the pipes to three drivers`,
+        )
+      },
+      (fuzzSeconds + 60) * Time.second,
+    )
+
+    test(
+      'random bytes hash the same in every edition, all at once and a piece at a time',
+      async () => {
+        let stop = Date.now() + fuzzSeconds * Time.second
+        let cycles = 0
+        while (Date.now() < stop) {
+          let data = randomBytes(randomLength())
+          let whole = { base16: hex(data) } //bytes cross to the drivers tagged, as the vectors carry them
+          let pieces = randomPieces(data).map((p) => ({ base16: hex(p) }))
+          await Promise.all(
+            Object.entries(editions).map(async ([name, e]) => {
+              for (let [hash, all, Hasher] of hashPairs) {
+                let expected = { base16: hex(all(data)) } //javascript's answer in-process, which every edition's must match
+                expect(await e[hash](whole), name).toEqual(expected)
+                expect(await e[Hasher.name](pieces), name).toEqual(expected) //and the same a piece at a time, from the hasher by its protocol name, like Sha1; this is what pins noble's blake3 against the official implementation in rust and python
+              }
+            }),
+          )
+          cycles++
+        }
+        console.log(
+          `every edition fuzzed ${cycles} random inputs through all three hashes, both forms, in ${fuzzSeconds} seconds, ${Math.round(cycles / fuzzSeconds)} a second`,
         )
       },
       (fuzzSeconds + 60) * Time.second,
