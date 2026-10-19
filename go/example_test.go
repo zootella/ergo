@@ -52,15 +52,36 @@ func ExampleTag() {
 
 // #endregion tag
 
+// #region data
+func ExampleData() {
+	d := ergo.DataFromText("hello")                             // bytes, from text
+	fmt.Println(d.Base16(), d.Base32(), d.Base62(), d.Base64()) // out in any form
+	back, _ := ergo.DataFromBase62("Q6LhR6z")                   // and back from any, each read exactly
+	text, _ := back.Text()
+	part, _ := d.ClipView(1, 3).Text() // part of it, without copying
+	b := ergo.NewBin(6)                // a set number of bytes, filled a byte or a Data at a time
+	b.Add(d)
+	b.AddByte('!')
+	whole, _ := b.Data().Text()
+	fmt.Println(text, part, whole)
+	// Output:
+	// 68656c6c6f NBSWY3DP Q6LhR6z aGVsbG8=
+	// hello el hello!
+}
+
+// #endregion data
+
 // #region hash
 func ExampleSHA256() {
-	d := ergo.SHA256([]byte("hello"))                                   // all at once, for bytes already in memory: 32 bytes
+	d := ergo.SHA256(ergo.DataFromText("hello"))                        // all at once, for bytes already in memory: a Data of 32 bytes, out in any form
 	file := strings.NewReader("hello")                                  // or os.Open(path), a file of any size
 	h1, h256, hb3 := ergo.NewSHA1(), ergo.NewSHA256(), ergo.NewBlake3() // or a piece at a time, all three from one read of the file
 	if _, err := io.Copy(io.MultiWriter(h1, h256, hb3), file); err != nil {
 		panic(err) // a hasher never fails a write, so an error here is the file's
 	}
-	fmt.Printf("%x\n%x\n%x\n%x\n", d, h1.Sum(nil), h256.Sum(nil), hb3.Sum(nil))
+	for _, h := range []ergo.Data{d, h1.Digest(), h256.Digest(), hb3.Digest()} {
+		fmt.Println(h.Base16())
+	}
 	// Output:
 	// 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
 	// aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d
@@ -69,3 +90,17 @@ func ExampleSHA256() {
 }
 
 // #endregion hash
+
+// #region fuji
+func ExampleHashFile() {
+	file := strings.NewReader("hello")      // or os.Open(path), which can read at offsets too, and its size
+	status, _ := ergo.HashFile(file, 5)     // the tip hash, from a few small reads
+	all, _ := ergo.HashStream(file, 5, nil) // the piece hash, from one read of all of it, which gives the tip hash too
+	fmt.Println(status.TipHash.Base32())
+	fmt.Println(all.PieceHash.Base32())
+	// Output:
+	// BSOEFHWYKUFE2ZEYFGKAE2X4IZXTXXCDJZQ2YRGKLMAETUJDTIHQ
+	// AD4G5U6L4LJC4DYUIUSFRIYHH5KMRVHCLOQQAKAPNNPFCRAUIV3Q
+}
+
+// #endregion fuji

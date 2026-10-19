@@ -5,8 +5,8 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use zootella_ergo::{
-    Blake3, Sha1, Sha256, blake3, has_tag, iso_to_tick, sha1, sha256, size, tag, text_to_tick,
-    tick_to_iso, tick_to_text, time,
+    Blake3, Data, Sha1, Sha256, blake3, has_tag, iso_to_tick, sha1, sha256, size, tag,
+    text_to_tick, tick_to_iso, tick_to_text, time,
 };
 
 /// The seconds ERGO_FUZZ names, or zero when it doesn't, which each test takes as its cue to return without running.
@@ -94,52 +94,28 @@ fn fuzz_hash() {
     if seconds <= 0.0 {
         return; // skipped: set ERGO_FUZZ to a number of seconds
     }
-    let mut x = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("the clock is past 1970")
-        .as_nanos() as u64
-        | 1; // xorshift state, as above
-    let data: Vec<u8> = (0..size::MB)
-        .map(|_| {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            x as u8
-        })
-        .collect();
-    // each hash by name, all at once and in two pieces, as vectors so the 20 bytes of sha1 and the 32 of the others compare alike
-    type Hash = fn(&[u8]) -> Vec<u8>;
+    let data = Data::random(size::MB as usize); // one mebibyte of random bytes from the operating system's random source, hashed again and again
+    // each hash by name, all at once, and in two pieces at a split that lines up with nothing
+    type Hash = fn(&Data) -> Data;
     let hashes: [(&str, Hash, Hash); 3] = [
-        (
-            "sha1",
-            |d| sha1(d).to_vec(),
-            |d| {
-                let mut h = Sha1::new();
-                h.update(&d[..1000]);
-                h.update(&d[1000..]);
-                h.finalize().to_vec()
-            },
-        ),
-        (
-            "sha256",
-            |d| sha256(d).to_vec(),
-            |d| {
-                let mut h = Sha256::new();
-                h.update(&d[..1000]);
-                h.update(&d[1000..]);
-                h.finalize().to_vec()
-            },
-        ),
-        (
-            "blake3",
-            |d| blake3(d).to_vec(),
-            |d| {
-                let mut h = Blake3::new();
-                h.update(&d[..1000]);
-                h.update(&d[1000..]);
-                h.finalize().to_vec()
-            },
-        ),
+        ("sha1", sha1, |d| {
+            let mut h = Sha1::new();
+            h.update(&d.clip_view(0, 1000));
+            h.update(&d.clip_view(1000, d.size()));
+            h.finalize()
+        }),
+        ("sha256", sha256, |d| {
+            let mut h = Sha256::new();
+            h.update(&d.clip_view(0, 1000));
+            h.update(&d.clip_view(1000, d.size()));
+            h.finalize()
+        }),
+        ("blake3", blake3, |d| {
+            let mut h = Blake3::new();
+            h.update(&d.clip_view(0, 1000));
+            h.update(&d.clip_view(1000, d.size()));
+            h.finalize()
+        }),
     ];
     let share = seconds / hashes.len() as f64; // an even share of the seconds for each hash
     let mut said = Vec::new();

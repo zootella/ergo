@@ -1,9 +1,7 @@
 package ergo_test
 
 import (
-	"bytes"
 	"fmt"
-	"hash"
 	"math/rand"
 	"os"
 	"strconv"
@@ -89,26 +87,23 @@ func TestFuzzTag(t *testing.T) {
 // TestFuzzHash runs each hash as fast as this edition can, on one mebibyte of random bytes again and again, and once a piece at a time to check it agrees.
 func TestFuzzHash(t *testing.T) {
 	seconds := fuzzSeconds(t)
-	data := make([]byte, ergo.MB)
-	for i := range data {
-		data[i] = byte(rand.Intn(256))
-	}
-	// each hash by name, all at once as a slice so the 20 bytes of SHA1 and the 32 of the others compare alike, and its hasher
+	data := ergo.RandomData(ergo.MB) // one mebibyte of random bytes, hashed again and again
+	// each hash by name, all at once, and its hasher
 	hashes := []struct {
 		name   string
-		all    func([]byte) []byte
-		hasher func() hash.Hash
+		all    func(ergo.Data) ergo.Data
+		hasher func() *ergo.Hasher
 	}{
-		{"sha1", func(d []byte) []byte { h := ergo.SHA1(d); return h[:] }, ergo.NewSHA1},
-		{"sha256", func(d []byte) []byte { h := ergo.SHA256(d); return h[:] }, ergo.NewSHA256},
-		{"blake3", func(d []byte) []byte { h := ergo.Blake3(d); return h[:] }, ergo.NewBlake3},
+		{"sha1", ergo.SHA1, ergo.NewSHA1},
+		{"sha256", ergo.SHA256, ergo.NewSHA256},
+		{"blake3", ergo.Blake3, ergo.NewBlake3},
 	}
 	share := seconds / float64(len(hashes)) // an even share of the seconds for each hash
 	var said []string
 	for _, h := range hashes {
 		stop := time.Now().Add(time.Duration(share * float64(time.Second)))
 		count := 0
-		var last []byte
+		var last ergo.Data
 		for {
 			last = h.all(data)
 			count++
@@ -117,9 +112,9 @@ func TestFuzzHash(t *testing.T) {
 			}
 		}
 		p := h.hasher() // and once a piece at a time, at a split that lines up with nothing, which must agree
-		p.Write(data[:1000])
-		p.Write(data[1000:])
-		if !bytes.Equal(p.Sum(nil), last) {
+		p.Update(data.ClipView(0, 1000))
+		p.Update(data.ClipView(1000, data.Size()))
+		if p.Digest().Base16() != last.Base16() {
 			t.Fatalf("%s disagreed with itself a piece at a time", h.name)
 		}
 		said = append(said, fmt.Sprintf("%s %.0f MiB a second", h.name, float64(count)/share))

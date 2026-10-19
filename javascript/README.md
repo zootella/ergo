@@ -14,6 +14,7 @@ import {
   Time,
   tickToText,
   tickToIso,
+  Data,
   sha256,
 } from '@zootella/ergo'
 
@@ -23,7 +24,8 @@ saySize4(123456789) // "117 MB": four digits or less, with a unit
 let deadline = Date.now() + 2 * Time.hour // two hours from now, in milliseconds
 tickToText(deadline) // "2026oct15.2041.7125", a tick's short exact text
 tickToIso(deadline) // "2026-10-15T20:41:07.125Z", the same tick's iso text
-await sha256(new TextEncoder().encode('hello')) // the SHA-256 hash, 32 bytes; sha1 and blake3 work the same way
+let d = Data({ text: 'hello' }) // bytes, which read out as base16, base32, base62, base64, or text
+;(await sha256(d)).base32() // the SHA-256 hash, as a Data, out in any form; sha1 and blake3 work the same way
 ```
 
 Documentation for every function, in all four languages, is at [zootella.com](https://zootella.com). The source and the shared test suite are at [github.com/zootella/ergo](https://github.com/zootella/ergo).

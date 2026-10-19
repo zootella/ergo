@@ -13,6 +13,7 @@ from zootella.ergo import (
     BLAKE3,
     SHA1,
     SHA256,
+    Data,
     Size,
     Time,
     blake3,
@@ -83,7 +84,7 @@ def test_fuzz_tag() -> None:
 @pytest.mark.skipif(seconds <= 0, reason="set ERGO_FUZZ to a number of seconds")
 def test_fuzz_hash() -> None:
     """Each hash as fast as this edition can, on one mebibyte of random bytes again and again, and once a piece at a time to check it agrees."""
-    data = os.urandom(Size.MB)
+    data = Data(random=Size.MB)
     hashes = [
         ("sha1", sha1, SHA1),
         ("sha256", sha256, SHA256),
@@ -99,8 +100,8 @@ def test_fuzz_hash() -> None:
             count += 1
         h = hasher()
         # and once a piece at a time, at a split that lines up with nothing, which must agree
-        h.update(data[:1000])
-        h.update(data[1000:])
+        h.update(data.clip_view(0, 1000))
+        h.update(data.clip_view(1000, data.size()))
         assert h.digest() == last
         said.append(f"{name} {round(count / share)} MiB a second")
     print(f"\npython hashed one mebibyte again and again: {', '.join(said)}")

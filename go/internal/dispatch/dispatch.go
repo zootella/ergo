@@ -2,9 +2,9 @@
 package dispatch
 
 import (
-	"encoding/hex"
+	goBytes "bytes" // named so, since this package's own bytes reads an argument as a Data
 	"fmt"
-	"hash"
+	"io"
 	"math"
 
 	ergo "github.com/zootella/ergo/go"
@@ -69,20 +69,58 @@ func Call(name string, args []any) (result any, err error) {
 	case "checkTag":
 		return ergo.CheckTag(text(args, 0)), nil
 	case "sha1":
-		h := ergo.SHA1(bytes(args, 0))
-		return base16(h[:]), nil
+		return base16(ergo.SHA1(bytes(args, 0))), nil
 	case "sha256":
-		h := ergo.SHA256(bytes(args, 0))
-		return base16(h[:]), nil
+		return base16(ergo.SHA256(bytes(args, 0))), nil
 	case "blake3":
-		h := ergo.Blake3(bytes(args, 0))
-		return base16(h[:]), nil
+		return base16(ergo.Blake3(bytes(args, 0))), nil
+	case "hashText":
+		return ergo.HashText(text(args, 0)), nil
 	case "Sha1":
 		return base16(fed(ergo.NewSHA1(), pieces(args, 0))), nil
 	case "Sha256":
 		return base16(fed(ergo.NewSHA256(), pieces(args, 0))), nil
 	case "Blake3":
 		return base16(fed(ergo.NewBlake3(), pieces(args, 0))), nil
+	case "Data":
+		return dataMethod(args)
+	case "Bin":
+		return binMethod(args)
+	case "hashProtocol.pieces.title":
+		return ergo.DefaultHashProtocol.Pieces.Title, nil
+	case "hashProtocol.pieces.size":
+		return ergo.DefaultHashProtocol.Pieces.Size, nil
+	case "hashProtocol.tips.title":
+		return ergo.DefaultHashProtocol.Tips.Title, nil
+	case "hashProtocol.tips.size":
+		return ergo.DefaultHashProtocol.Tips.Size, nil
+	case "hashMeasure":
+		m, _ := args[0].(map[string]any)
+		return measured(ergo.HashMeasure(integer([]any{m["file"]}, 0), integer([]any{m["unit"]}, 0))), nil
+	case "hashStripeOverlap":
+		background := []([2]int64){}
+		for _, b := range list(args, 1) {
+			background = append(background, stripe(b))
+		}
+		return stripes(ergo.HashStripeOverlap(stripe(args[0]), background)), nil
+	case "hashFile":
+		file := bytes(args, 0)
+		status, err := protocol(args, 1).HashFile(goBytes.NewReader(file.Array()), int64(file.Size()))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"tipHash": base16(status.TipHash)}, nil
+	case "hashStream":
+		list := pieces(args, 0)
+		var size int64
+		for _, piece := range list {
+			size += int64(piece.Size())
+		}
+		status, err := protocol(args, 1).HashStream(&boxes{pieces: list}, size, nil)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"tipHash": base16(status.TipHash), "pieceHash": base16(status.PieceHash)}, nil
 	default:
 		return nil, fmt.Errorf("unknown function: %s", name)
 	}
@@ -130,74 +168,253 @@ func text(args []any, i int) string {
 	return s
 }
 
-// fed is the hash of every piece written in order: a hasher in the protocol takes one argument, a list of pieces, so a vector pins the piece-at-a-time form without the harness keeping an object between calls
-func fed(h hash.Hash, pieces [][]byte) []byte {
+// fed is the hash of every piece fed in order: a hasher in the protocol takes one argument, a list of pieces, so a vector pins the piece-at-a-time form without the harness keeping an object between calls
+func fed(h *ergo.Hasher, pieces []ergo.Data) ergo.Data {
 	for _, piece := range pieces {
-		h.Write(piece) // a hash.Hash never returns an error from Write
+		h.Update(piece)
 	}
-	return h.Sum(nil)
+	return h.Digest()
 }
 
-// bytes is argument i as bytes, from either tagged form, or a panic naming the argument, which Call turns into an error
-func bytes(args []any, i int) []byte {
+// dataMethod is a Data in the protocol: the form to make it from, then the name of a method and that method's arguments, like [{"text": "ABC"}, "base16"] or [{"base16": "414243"}, "clipView", 1, 3]; tagged bytes are already a Data, and any other form, like {"text": ...}, makes one here
+func dataMethod(args []any) (any, error) {
+	if len(args) < 2 {
+		panic("a Data needs a form and a method")
+	}
+	d, ok, err := tagged(args[0])
+	if !ok {
+		d, err = made(args[0])
+	}
+	if err != nil {
+		return nil, err
+	}
+	switch method := text(args, 1); method {
+	case "size":
+		return d.Size(), nil
+	case "text":
+		return d.Text()
+	case "base16":
+		return d.Base16(), nil
+	case "base32":
+		return d.Base32(), nil
+	case "base62":
+		return d.Base62(), nil
+	case "base64":
+		return d.Base64(), nil
+	case "get":
+		return int(d.Get(int(integer(args, 2)))), nil
+	case "clipView":
+		return base16(d.ClipView(int(integer(args, 2)), int(integer(args, 3)))), nil
+	case "clipCopy":
+		return base16(d.ClipCopy(int(integer(args, 2)), int(integer(args, 3)))), nil
+	default:
+		return nil, fmt.Errorf("unknown method of Data: %s", method)
+	}
+}
+
+// made is a Data from a form that isn't tagged bytes: {"text": ...}, {"base32": ...}, {"base62": ...}, {"base64": ...}, or {"random": n}
+func made(form any) (ergo.Data, error) {
+	m, _ := form.(map[string]any)
+	if s, ok := m["text"].(string); ok {
+		return ergo.DataFromText(s), nil
+	} else if s, ok := m["base32"].(string); ok {
+		return ergo.DataFromBase32(s)
+	} else if s, ok := m["base62"].(string); ok {
+		return ergo.DataFromBase62(s)
+	} else if s, ok := m["base64"].(string); ok {
+		return ergo.DataFromBase64(s)
+	} else if _, ok := m["random"]; ok {
+		return ergo.RandomData(int(count([]any{m["random"]}, 0))), nil
+	}
+	return ergo.Data{}, fmt.Errorf("not a form a Data is made from: %v", form)
+}
+
+// binMethod is a Bin in the protocol: its capacity, a list of what to add, each a byte or a Data, and the name of a method to answer with
+func binMethod(args []any) (any, error) {
+	b := ergo.NewBin(int(integer(args, 0)))
+	items, ok := args[1].([]any)
+	if !ok {
+		panic("argument 1 must be a list")
+	}
+	for _, item := range items {
+		if d, ok, err := tagged(item); ok {
+			if err != nil {
+				return nil, err
+			}
+			b.Add(d)
+		} else {
+			n := integer([]any{item}, 0)
+			if n < 0 || n > 255 {
+				panic(fmt.Sprintf("not a byte: %d", n))
+			}
+			b.AddByte(byte(n))
+		}
+	}
+	switch method := text(args, 2); method {
+	case "size":
+		return b.Size(), nil
+	case "capacity":
+		return b.Capacity(), nil
+	case "data":
+		return base16(b.Data()), nil
+	default:
+		return nil, fmt.Errorf("unknown method of Bin: %s", method)
+	}
+}
+
+// measured is what every edition measures alike: the pieces, and the stripes the tip hash reads
+func measured(m ergo.HashMeasurement) map[string]any {
+	return map[string]any{"pieces": m.Pieces, "complete": m.Complete, "fragment": m.Fragment, "stripes": stripes(m.Stripes), "stripeSize": m.StripeSize}
+}
+
+// stripes is a list of stripes as json, each [start, end]
+func stripes(s [][2]int64) []any {
+	out := []any{}
+	for _, x := range s {
+		out = append(out, []any{x[0], x[1]})
+	}
+	return out
+}
+
+// stripe is a stripe from json, [start, end], or a panic, which Call turns into an error
+func stripe(v any) [2]int64 {
+	pair, ok := v.([]any)
+	if !ok || len(pair) != 2 {
+		panic(fmt.Sprintf("not a stripe: %v", v))
+	}
+	return [2]int64{integer(pair, 0), integer(pair, 1)}
+}
+
+// list is argument i as a json list
+func list(args []any, i int) []any {
 	if i >= len(args) {
 		panic(fmt.Sprintf("argument %d is missing", i))
 	}
-	b, ok := tagged(args[i])
+	l, ok := args[i].([]any)
 	if !ok {
-		panic(fmt.Sprintf("argument %d must be bytes", i))
+		panic(fmt.Sprintf("argument %d must be a list", i))
 	}
-	return b
+	return l
 }
 
-// pieces is argument i as a list of pieces of bytes
-func pieces(args []any, i int) [][]byte {
+// protocol is argument i as a protocol, like {"pieces": {"title": ..., "size": ...}, "tips": {...}}, or the fuji one when there's none
+func protocol(args []any, i int) ergo.HashProtocol {
+	if i >= len(args) || args[i] == nil {
+		return ergo.DefaultHashProtocol
+	}
+	m, _ := args[i].(map[string]any)
+	unit := func(v any) ergo.HashUnit {
+		u, _ := v.(map[string]any)
+		title, _ := u["title"].(string)
+		return ergo.HashUnit{Title: title, Size: integer([]any{u["size"]}, 0)}
+	}
+	return ergo.HashProtocol{Pieces: unit(m["pieces"]), Tips: unit(m["tips"])}
+}
+
+// boxes is a stream that delivers the given pieces as its boxes, in order, each read answering no more than the rest of one piece
+type boxes struct {
+	pieces []ergo.Data
+	at     int // which piece is next
+	into   int // how far into it
+}
+
+func (b *boxes) Read(p []byte) (int, error) {
+	for b.at < len(b.pieces) && b.into == b.pieces[b.at].Size() {
+		b.at++ // past a piece that's done, or empty
+		b.into = 0
+	}
+	if b.at == len(b.pieces) {
+		return 0, io.EOF // the end of the stream
+	}
+	n := copy(p, b.pieces[b.at].Array()[b.into:])
+	b.into += n
+	return n, nil
+}
+
+// mulberryData is {"mulberry": seed, "length": n}, n bytes from icarus's Mulberry32 generator at that seed, wrapping at 32 bits as every edition must, so a vector can name a realistic file of any size in a line; Mulberry32 is a well-known small PRNG by Tommy Ettinger from 2018
+func mulberryData(seed uint32, length int) ergo.Data {
+	s := seed
+	a := make([]byte, length)
+	var v uint32
+	for i := range a {
+		if i%4 == 0 { // a new 32-bit value every 4 bytes
+			s += 0x6d2b79f5
+			t := s
+			t = (t ^ t>>15) * (t | 1)
+			t ^= t + (t^t>>7)*(t|61)
+			v = t ^ t>>14
+		}
+		a[i] = byte(v >> ((i % 4) * 8)) // the appropriate byte from it, low byte first
+	}
+	return ergo.DataFromArray(a)
+}
+
+// bytes is argument i as a Data, from either tagged form, or a panic naming the argument, which Call turns into an error
+func bytes(args []any, i int) ergo.Data {
+	if i >= len(args) {
+		panic(fmt.Sprintf("argument %d is missing", i))
+	}
+	d, ok, err := tagged(args[i])
+	if !ok || err != nil {
+		panic(fmt.Sprintf("argument %d must be bytes", i))
+	}
+	return d
+}
+
+// pieces is argument i as a list of pieces, each a Data
+func pieces(args []any, i int) []ergo.Data {
 	if i >= len(args) {
 		panic(fmt.Sprintf("argument %d is missing", i))
 	}
 	list, ok := args[i].([]any)
 	if !ok {
-		panic(fmt.Sprintf("argument %d must be a list of pieces of bytes", i))
+		panic(fmt.Sprintf("argument %d must be a list of pieces", i))
 	}
-	out := make([][]byte, len(list))
+	out := make([]ergo.Data, len(list))
 	for j, v := range list {
-		if out[j], ok = tagged(v); !ok {
+		d, ok, err := tagged(v)
+		if !ok || err != nil {
 			panic(fmt.Sprintf("piece %d of argument %d must be bytes", j, i))
 		}
+		out[j] = d
 	}
 	return out
 }
 
-// tagged decodes bytes from the protocol's tagged json: {"base16": "616263"} is those three bytes, and {"repeat": "61", "length": 1000000} is those bytes repeated to that length, so a vector can name a million bytes in a line; false if v is neither
-func tagged(v any) ([]byte, bool) {
-	m, ok := v.(map[string]any)
-	if !ok {
-		return nil, false
+// tagged decodes bytes from the protocol's tagged json into a Data: {"base16": "616263"} is those three bytes, and {"repeat": "61", "length": 1000000} is those bytes repeated to that length, so a vector can name a million bytes in a line; ok is false if v is neither form, and err is set if it's one of them but malformed
+func tagged(v any) (d ergo.Data, ok bool, err error) {
+	m, isMap := v.(map[string]any)
+	if !isMap {
+		return ergo.Data{}, false, nil
 	}
-	if s, ok := m["base16"].(string); ok {
-		b, err := hex.DecodeString(s)
-		return b, err == nil
+	if s, isText := m["base16"].(string); isText {
+		d, err = ergo.DataFromBase16(s) // ergo's own base16 reader, which takes exactly what its writer makes, lowercase and nothing else
+		return d, true, err
 	}
-	s, ok := m["repeat"].(string)
-	if !ok {
-		return nil, false
+	if seed, isNumber := m["mulberry"].(float64); isNumber {
+		length, isLength := m["length"].(float64)
+		if !isLength || seed < 0 || seed > math.MaxUint32 || length < 0 || length != math.Trunc(length) {
+			return ergo.Data{}, true, fmt.Errorf("not bytes: %v", v)
+		}
+		return mulberryData(uint32(seed), int(length)), true, nil
 	}
-	length, ok := m["length"].(float64) // a json number, which must be a count within the integer ceiling
-	if !ok || length < 0 || length != math.Trunc(length) || length > 1<<53-1 {
-		return nil, false
+	s, isText := m["repeat"].(string)
+	if !isText {
+		return ergo.Data{}, false, nil
 	}
-	unit, err := hex.DecodeString(s)
-	if err != nil || len(unit) == 0 { // a unit of at least one byte, the same rule in every edition
-		return nil, false
+	unit, err := ergo.DataFromBase16(s)
+	length, isNumber := m["length"].(float64) // a json number, which must be a count within the integer ceiling
+	if err != nil || !isNumber || length < 0 || length != math.Trunc(length) || length > 1<<53-1 || unit.Size() == 0 {
+		return ergo.Data{}, true, fmt.Errorf("not bytes: %v", v) // a unit of at least one byte, the same rule in every edition
 	}
 	b := make([]byte, int(length))
 	for j := range b {
-		b[j] = unit[j%len(unit)]
+		b[j] = unit.Array()[j%unit.Size()]
 	}
-	return b, true
+	return ergo.DataFromArray(b), true, nil
 }
 
-// base16 is a result that is bytes, tagged the first way, in lowercase base16
-func base16(b []byte) map[string]any {
-	return map[string]any{"base16": hex.EncodeToString(b)}
+// base16 is a result that is a Data, tagged the first way, as its base16
+func base16(d ergo.Data) map[string]any {
+	return map[string]any{"base16": d.Base16()}
 }

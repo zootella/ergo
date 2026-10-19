@@ -404,52 +404,523 @@ pub fn check_tag(s: &str) -> &str {
     s
 }
 
+// data
+
+// A Data holds bytes. Every language keeps bytes its own way, in arrays and buffers and views with their own rules about copying and size, and every platform call that takes or gives bytes wants its own one of them. A Data makes those choices once: it holds the bytes, and it speaks every form they travel in, text and base16, base32, base62, and base64, through methods with plain names. Make one from any form, read it out as any other, and it's the same bytes. In Rust a Data shares its bytes through an Arc, so cloning one, or clipping a view of part of it, never copies them.
+//
+// Every function in ergo that trades in bytes trades in Data. A hash takes a Data and answers one, and never decides what text the caller wants next; the caller says, with the next method. Only Data knows the encodings.
+//
+// Each form is exact, both ways. Every reader ends by writing the bytes back out and requiring the text it read, so it accepts only what its writer produces: base16 in lowercase, base32 without padding, base64 with it, nothing extra and nothing missing. Text becomes UTF-8 in Unicode Normalization Form C, so the same characters typed two ways become the same bytes, and reading bytes as text refuses bytes that aren't UTF-8, or aren't in that form, rather than guess. A reader refuses with a DataError, the way the tick readers refuse with a ParseError.
+//
+// clip_view looks at part of a Data without copying it. clip_copy copies the part out, into bytes of its own.
+//
+// The standard library has no base16, base32, or base64, so the few lines of each are here, beside base62, which is ergo's own; the shared vectors pin all four against the other editions, whose platforms have the first three.
+
+/// Bytes, made from exactly one form, like `Data::from_text("hello")` or `Data::from_base16("68656c6c6f")`, and read out as any: array, text, base16, base32, base62, or base64.
+///
+/// ```
+/// use zootella_ergo::Data;
+/// let d = Data::from_text("hello");
+/// assert_eq!(d.base16(), "68656c6c6f");
+/// assert_eq!(Data::from_base62("Q6LhR6z").unwrap().text().unwrap(), "hello");
+/// ```
+#[derive(Clone)]
+pub struct Data {
+    bytes: std::sync::Arc<Vec<u8>>,
+    start: usize,
+    end: usize,
+}
+
+impl Data {
+    /// A Data of bytes copied from the given ones; `Data::from(vec)` takes a `Vec<u8>` without copying it.
+    pub fn from_array(a: &[u8]) -> Data {
+        Data::from(a.to_vec())
+    }
+    /// A Data of text, as UTF-8 in Normalization Form C, so the same characters typed two ways become the same bytes. A `&str` is always UTF-8, so this never fails.
+    pub fn from_text(s: &str) -> Data {
+        use unicode_normalization::UnicodeNormalization;
+        Data::from(s.nfc().collect::<String>().into_bytes())
+    }
+    /// A Data read from base16, or a [`DataError`] because the text isn't exactly what [`base16`](Data::base16) writes, two lowercase digits a byte.
+    pub fn from_base16(s: &str) -> Result<Data, DataError> {
+        base16_to_bytes(s).map(Data::from)
+    }
+    /// A Data read from base32, or a [`DataError`] because the text isn't exactly what [`base32`](Data::base32) writes, uppercase and without padding.
+    pub fn from_base32(s: &str) -> Result<Data, DataError> {
+        base32_to_bytes(s).map(Data::from)
+    }
+    /// A Data read from base62, or a [`DataError`] because the text isn't exactly what [`base62`](Data::base62) writes.
+    pub fn from_base62(s: &str) -> Result<Data, DataError> {
+        base62_to_bytes(s).map(Data::from)
+    }
+    /// A Data read from base64, or a [`DataError`] because the text isn't exactly what [`base64`](Data::base64) writes, with its padding.
+    pub fn from_base64(s: &str) -> Result<Data, DataError> {
+        base64_to_bytes(s).map(Data::from)
+    }
+    /// A Data of `n` bytes from the operating system's random source.
+    pub fn random(n: usize) -> Data {
+        let mut a = vec![0u8; n];
+        getrandom::fill(&mut a).expect("the operating system's random source is unavailable");
+        Data::from(a)
+    }
+
+    /// The size in bytes.
+    pub fn size(&self) -> usize {
+        self.end - self.start
+    }
+    /// The bytes themselves, which this doesn't copy.
+    pub fn array(&self) -> &[u8] {
+        &self.bytes[self.start..self.end]
+    }
+    /// The bytes as text, or a [`DataError`] because they aren't UTF-8 in Normalization Form C, since other bytes would become different bytes as text. A leading byte order mark stays the character it is.
+    pub fn text(&self) -> Result<String, DataError> {
+        let refused = || DataError {
+            form: "text",
+            text: self.base16(),
+        };
+        let s = std::str::from_utf8(self.array()).map_err(|_| refused())?;
+        if !unicode_normalization::is_nfc(s) {
+            return Err(refused());
+        }
+        Ok(s.to_string())
+    }
+    /// The bytes in base16, two lowercase digits each.
+    pub fn base16(&self) -> String {
+        bytes_to_base16(self.array())
+    }
+    /// The bytes in base32, uppercase and without padding.
+    pub fn base32(&self) -> String {
+        bytes_to_base32(self.array())
+    }
+    /// The bytes in base62.
+    pub fn base62(&self) -> String {
+        bytes_to_base62(self.array())
+    }
+    /// The bytes in base64, with its padding.
+    pub fn base64(&self) -> String {
+        bytes_to_base64(self.array())
+    }
+
+    /// The byte at index `i`, a number 0x00 0 through 0xff 255.
+    ///
+    /// # Panics
+    ///
+    /// Panics if there's no byte at `i`, which is a bug in the caller; ask [`size`](Data::size) first.
+    pub fn get(&self, i: usize) -> u8 {
+        assert!(i < self.size(), "no byte {i} in {} bytes", self.size());
+        self.array()[i]
+    }
+    /// The bytes from index `start` up to `end`, looked at without copying, since the bytes beneath never change.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless `start <= end <= size()`, which is a bug in the caller. A clip of nothing is fine.
+    pub fn clip_view(&self, start: usize, end: usize) -> Data {
+        check_clip(self.size(), start, end);
+        Data {
+            bytes: self.bytes.clone(),
+            start: self.start + start,
+            end: self.start + end,
+        }
+    }
+    /// The bytes from index `start` up to `end`, copied out into bytes of their own 🪏.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless `start <= end <= size()`, which is a bug in the caller.
+    pub fn clip_copy(&self, start: usize, end: usize) -> Data {
+        check_clip(self.size(), start, end);
+        Data::from_array(&self.array()[start..end])
+    }
+}
+
+/// A Data that takes the vector as it is, without copying it.
+impl From<Vec<u8>> for Data {
+    fn from(a: Vec<u8>) -> Data {
+        let end = a.len();
+        Data {
+            bytes: std::sync::Arc::new(a),
+            start: 0,
+            end,
+        }
+    }
+}
+
+impl AsRef<[u8]> for Data {
+    fn as_ref(&self) -> &[u8] {
+        self.array()
+    }
+}
+
+/// Two Data are equal when they hold the same bytes, however each was made.
+impl PartialEq for Data {
+    fn eq(&self, other: &Data) -> bool {
+        self.array() == other.array()
+    }
+}
+impl Eq for Data {}
+
+impl std::fmt::Debug for Data {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Data({})", self.base16())
+    }
+}
+
+/// Text a Data reader refused, because it isn't exactly the form that reader's writer produces, like base16 with an uppercase digit, or bytes read as text that aren't UTF-8 in Normalization Form C. Carries the form and the refused text, as base16 for bytes that aren't text, so a log can show both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataError {
+    /// The form the text was meant to be, like "base16" or "text".
+    pub form: &'static str,
+    /// The text refused.
+    pub text: String,
+}
+
+impl std::fmt::Display for DataError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "not {}: {:?}", self.form, self.text)
+    }
+}
+
+impl std::error::Error for DataError {}
+
+/// Start through end are byte indices from the start, so a clip of nothing is fine, but not one past the end, or backwards.
+fn check_clip(size: usize, start: usize, end: usize) {
+    assert!(
+        start <= end && end <= size,
+        "not a clip of {size} bytes: {start} to {end}"
+    );
+}
+
+/// The last check in every reader: write the bytes back out, and require exactly the text it read.
+fn round_trip(
+    form: &'static str,
+    s: &str,
+    a: Vec<u8>,
+    write: fn(&[u8]) -> String,
+) -> Result<Vec<u8>, DataError> {
+    if write(&a) == s {
+        Ok(a)
+    } else {
+        Err(refuse(form, s))
+    }
+}
+
+/// The error a reader answers with.
+fn refuse(form: &'static str, s: &str) -> DataError {
+    DataError {
+        form,
+        text: s.to_string(),
+    }
+}
+
+/// The digits of base16, which the standard library leaves to us.
+const BASE16_ALPHABET: &[u8; 16] = b"0123456789abcdef";
+
+fn bytes_to_base16(a: &[u8]) -> String {
+    let mut s = String::with_capacity(a.len() * 2);
+    for &b in a {
+        s.push(BASE16_ALPHABET[usize::from(b >> 4)] as char);
+        s.push(BASE16_ALPHABET[usize::from(b & 15)] as char);
+    }
+    s
+}
+fn base16_to_bytes(s: &str) -> Result<Vec<u8>, DataError> {
+    let digit = |c: u8| BASE16_ALPHABET.iter().position(|&x| x == c); // lowercase digits only
+    let mut a = Vec::with_capacity(s.len() / 2);
+    let mut pairs = s.as_bytes().chunks_exact(2);
+    for pair in pairs.by_ref() {
+        match (digit(pair[0]), digit(pair[1])) {
+            (Some(high), Some(low)) => a.push((high * 16 + low) as u8),
+            _ => return Err(refuse("base16", s)),
+        }
+    }
+    if !pairs.remainder().is_empty() {
+        return Err(refuse("base16", s)); // an odd number of digits
+    }
+    round_trip("base16", s, a, bytes_to_base16)
+}
+
+/// The base64 alphabet, which ends in + and /, with = for padding.
+const BASE64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn bytes_to_base64(a: &[u8]) -> String {
+    let mut s = String::with_capacity(a.len().div_ceil(3) * 4);
+    for group in a.chunks(3) {
+        let n = (u32::from(group[0]) << 16)
+            | (u32::from(*group.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*group.get(2).unwrap_or(&0)); // three bytes, or fewer at the end with zeros after them
+        for k in 0..4 {
+            if k <= group.len() {
+                s.push(BASE64_ALPHABET[((n >> (18 - 6 * k)) & 63) as usize] as char);
+            } else {
+                s.push('='); // padding, one for each byte the last group lacks
+            }
+        }
+    }
+    s
+}
+fn base64_to_bytes(s: &str) -> Result<Vec<u8>, DataError> {
+    let body = s.trim_end_matches('='); // the round trip below requires exactly the padding the writer adds
+    let mut a = Vec::with_capacity(s.len() / 4 * 3);
+    let mut value = 0u32; // holds the accumulated bits
+    let mut bits = 0u32; // how many of them
+    for c in body.bytes() {
+        let code = BASE64_ALPHABET
+            .iter()
+            .position(|&x| x == c)
+            .ok_or_else(|| refuse("base64", s))?;
+        value = (value << 6) | code as u32;
+        bits += 6;
+        if bits >= 8 {
+            a.push(((value >> (bits - 8)) & 255) as u8);
+            bits -= 8;
+        }
+    }
+    round_trip("base64", s, a, bytes_to_base64)
+}
+
+// base32, for hash values in the database, so they can be short, but also always the same length
+
+/// The base32 alphabet, uppercase letters and 2 through 7.
+const BASE32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+fn bytes_to_base32(a: &[u8]) -> String {
+    let mut s = String::with_capacity((a.len() * 8).div_ceil(5));
+    let mut bits = 0u32; // bit counter
+    let mut value = 0u32; // holds the accumulated bits
+    for &b in a {
+        value = (value << 8) | u32::from(b); // shift value left by 8 bits and OR with the current byte
+        bits += 8;
+        while bits >= 5 {
+            s.push(BASE32_ALPHABET[((value >> (bits - 5)) & 31) as usize] as char); // extract the top 5 bits as a base32 character
+            bits -= 5;
+        }
+    }
+    if bits > 0 {
+        s.push(BASE32_ALPHABET[((value << (5 - bits)) & 31) as usize] as char); // handle the remaining bits
+    }
+    s
+}
+fn base32_to_bytes(s: &str) -> Result<Vec<u8>, DataError> {
+    let mut a = Vec::with_capacity(s.len() * 5 / 8);
+    let mut bits = 0u32; // bit counter
+    let mut value = 0u32; // holds the accumulated bits
+    for c in s.bytes() {
+        let code = BASE32_ALPHABET
+            .iter()
+            .position(|&x| x == c)
+            .ok_or_else(|| refuse("base32", s))?;
+        value = (value << 5) | code as u32;
+        bits += 5;
+        if bits >= 8 {
+            a.push(((value >> (bits - 8)) & 255) as u8); // extract the top 8 bits as a byte
+            bits -= 8;
+        }
+    }
+    round_trip("base32", s, a, bytes_to_base32) // which refuses padding, and a last character with bits that belong to no byte
+}
+
+// base62
+//
+// Why so many different encoding formats? base16 is good because it's simple, standard, and you can see the bytes. base32 is shorter, double-clickable, and always the same length, good for storing hash values in the database. base62 is shorter and double-clickable, good for bytes in the query string of api calls and the location bar the user might see. base64 is about the same length, standard, but not double-clickable, included here for completeness.
+
+/// Narrow characters in popular spots, for data.
+const ALPHABET62_STREAM: &[u8] = b"1023456789ABCDEFIGHJKLMNOPQRSTUVjWXYZabcdefghkmnlopqrstuvwxyzi";
+//                                 ^               ^               ^               ^            ^
+//                                 1               I               j               l            i  moved characters
+//                                 0               16              32              48           61  to these indices
+//
+// Encoding random short data, some characters appear more frequently than others.
+// The last character, at index 61, is the most common.
+// Also, the characters at 0, 16, 32, and 48 are slightly more common.
+// Rendered to pixels for a user, we want base62 text to be as short as possible!
+// So, we've adjusted the alphabet to put narrow characters in the popular spots.
+
+/// Turn data into text using base 62, each 4 or 6 bits will become a character 0-9, a-z, and A-Z.
+fn bytes_to_base62(a: &[u8]) -> String {
+    let mut s = String::new(); // target string to build up and return
+    let mut i = 0; // the index in bits, from 0 through all the bits in the given data
+    while i < a.len() * 8 {
+        // the same index as a distance in bytes followed by a distance in bits
+        let byte_index = i / 8;
+        let bit_index = i % 8;
+
+        // copy the two bytes at byte_index into pair; on the very last byte, leave the right byte in pair all 0s
+        let mut pair = u32::from(a[byte_index]) << 8;
+        if byte_index + 1 < a.len() {
+            pair |= u32::from(a[byte_index + 1]);
+        }
+
+        // read the 6 bits at i as a number, called code, which will be 0 through 63
+        let code = (pair >> (10 - bit_index)) & 63;
+
+        // describe the 6 bits with a numeral or letter, 111100 is 60, if 61 move forward 4, not 6
+        if code < 61 {
+            s.push(ALPHABET62_STREAM[code as usize] as char); // 000000 0 through 111100 60 append character at that index
+            i += 6;
+        } else {
+            s.push(ALPHABET62_STREAM[61] as char); // 111101 61, 111110 62, and 111111 63 append 'i' and move past '1111'
+            i += 4;
+        }
+    }
+    s
+}
+fn base62_to_bytes(s: &str) -> Result<Vec<u8>, DataError> {
+    let mut b = Bin::new(s.len()); // more characters become fewer bytes, so this capacity will always be plenty
+    let mut hold = 0u32; // a place to hold bits from several characters until we have 8 and can write a byte
+    let mut bits = 0; // the number of bits stored in the right side of hold right now
+    for c in s.bytes() {
+        let code = ALPHABET62_STREAM
+            .iter()
+            .position(|&x| x == c)
+            .ok_or_else(|| refuse("base62", s))? as u32;
+
+        // insert the bits from code into hold
+        if code == 61 {
+            hold = (hold << 4) | 15; // insert 1111 for common 'i' at last alphabet index 61
+            bits += 4;
+        } else {
+            hold = (hold << 6) | code; // insert 000000 through 111100 for other characters
+            bits += 6;
+        }
+
+        // if we have enough bits in hold to write a byte
+        if bits >= 8 {
+            b.add_byte(((hold >> (bits - 8)) & 0xff) as u8); // move the 8 leftmost bits in hold to our Bin object
+            bits -= 8; // remove the bits we wrote from hold, any extra bits there will be written next time
+        }
+    }
+    round_trip("base62", s, b.array().to_vec(), bytes_to_base62) // which refuses a last character with bits that belong to no byte
+}
+
+// bin
+
+/// A set number of bytes, which you add a byte or a Data at a time until it's full. It's how to assemble bytes whose size you know before you start, and refusing to hold more than that catches a mistake in the prediction.
+///
+/// ```
+/// use zootella_ergo::{Bin, Data};
+/// let mut b = Bin::new(6);
+/// b.add(&Data::from_text("hello"));
+/// b.add_byte(b'!');
+/// assert_eq!(b.data().text().unwrap(), "hello!");
+/// ```
+#[derive(Clone, Debug)]
+pub struct Bin {
+    array: Vec<u8>,
+    capacity: usize,
+}
+
+impl Bin {
+    /// A new Bin that can hold `capacity` bytes, holding none yet.
+    pub fn new(capacity: usize) -> Bin {
+        Bin {
+            array: Vec::with_capacity(capacity),
+            capacity,
+        }
+    }
+    /// How many bytes it can hold.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+    /// How many bytes it does hold.
+    pub fn size(&self) -> usize {
+        self.array.len()
+    }
+    /// Add all of a Data.
+    ///
+    /// # Panics
+    ///
+    /// Panics if it won't fit, which means the size predicted for this Bin was wrong.
+    pub fn add(&mut self, data: &Data) {
+        assert!(
+            self.size() + data.size() <= self.capacity,
+            "a Bin of {} bytes holding {} can't take {} more",
+            self.capacity,
+            self.size(),
+            data.size()
+        );
+        self.array.extend_from_slice(data.array());
+    }
+    /// Add one byte.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the Bin is already full.
+    pub fn add_byte(&mut self, b: u8) {
+        assert!(
+            self.size() < self.capacity,
+            "a Bin of {} bytes is full",
+            self.capacity
+        );
+        self.array.push(b);
+    }
+    /// What it holds so far.
+    pub fn array(&self) -> &[u8] {
+        &self.array
+    }
+    /// What it holds so far, as a Data, which copies it, since the Bin can still take more.
+    pub fn data(&self) -> Data {
+        Data::from_array(&self.array)
+    }
+}
+
 // hash
 
 // Three hashes, each the one the world already knows. SHA-1 is the oldest, the one older manifests name a file by and git names its objects with. It's broken for collisions, two different inputs made to share a hash on purpose, so use it to match a hash that already exists, never to protect anything. SHA-256 is the standard everywhere today. BLAKE3 is the newest, built for speed as a tree, so pieces of one input can hash on many cores at once, and it's the one to name a file by for years to come.
 //
-// Each hash comes in two forms that give the same answer. The function takes all the bytes at once, like sha256(data), for data already in memory. The hasher takes them a piece at a time, as a file or a stream delivers them: make one with Sha256::new(), call update with each piece in order, and call finalize for the hash. A file of any size hashes this way in the memory of one piece, and a single read of the file can feed all three hashers. Finalize doesn't finish a hasher, as in the blake3 crate: update it again and finalize again for the hash of everything so far. Each hasher is also an io::Write, so io::copy can feed one straight from a reader.
+// Each hash takes a Data and answers one, and comes in two forms that give the same answer. The function takes all the bytes at once, like sha256(&data), for data already in memory. The hasher takes them a piece at a time, as a file or a stream delivers them: make one with Sha256::new(), call update with each piece in order, and call finalize for the hash. A file of any size hashes this way in the memory of one piece, and a single read of the file can feed all three hashers. Finalize doesn't finish a hasher, as in the blake3 crate: update it again and finalize again for the hash of everything so far. Each hasher is also an io::Write, so io::copy can feed one straight from a reader, the raw bytes of each read going in with no Data made of them.
 //
 // The standard library has no cryptographic hashes, so SHA-1 and SHA-256 come from RustCrypto's sha1 and sha2, and BLAKE3 from the blake3 crate, the official implementation by BLAKE3's authors. Each edition takes each hash from its platform wherever the platform has it, and otherwise from the official implementation or the best known one, and the shared vectors and the fuzz test hold all four to the same answers.
 
-/// The SHA-1 hash of `data`, 20 bytes. For matching a hash that already exists, like an older manifest's, since SHA-1 is broken for collisions.
+/// The SHA-1 hash of a Data, as a Data of 20 bytes. For matching a hash that already exists, like an older manifest's, since SHA-1 is broken for collisions.
 ///
 /// ```
-/// let h = zootella_ergo::sha1(b"abc");
-/// assert_eq!(h[..4], [0xa9, 0x99, 0x3e, 0x36]);
+/// use zootella_ergo::{Data, sha1};
+/// assert_eq!(sha1(&Data::from_text("abc")).base16(), "a9993e364706816aba3e25717850c26c9cd0d89d");
 /// ```
-pub fn sha1(data: &[u8]) -> [u8; 20] {
-    <sha1::Sha1 as sha1::Digest>::digest(data).into()
+pub fn sha1(data: &Data) -> Data {
+    Data::from(<sha1::Sha1 as sha1::Digest>::digest(data.array()).to_vec())
 }
 
-/// The SHA-256 hash of `data`, 32 bytes.
+/// The SHA-256 hash of a Data, as a Data of 32 bytes.
 ///
 /// ```
-/// let h = zootella_ergo::sha256(b"abc");
-/// assert_eq!(h[..4], [0xba, 0x78, 0x16, 0xbf]);
+/// use zootella_ergo::{Data, sha256};
+/// assert_eq!(sha256(&Data::from_text("abc")).array()[..4], [0xba, 0x78, 0x16, 0xbf]);
 /// ```
-pub fn sha256(data: &[u8]) -> [u8; 32] {
-    <sha2::Sha256 as sha2::Digest>::digest(data).into()
+pub fn sha256(data: &Data) -> Data {
+    Data::from(<sha2::Sha256 as sha2::Digest>::digest(data.array()).to_vec())
 }
 
-/// The BLAKE3 hash of `data`, 32 bytes.
+/// The BLAKE3 hash of a Data, as a Data of 32 bytes.
 ///
 /// ```
-/// let h = zootella_ergo::blake3(b"abc");
-/// assert_eq!(h[..4], [0x64, 0x37, 0xb3, 0xac]);
+/// use zootella_ergo::{Data, blake3};
+/// assert_eq!(blake3(&Data::from_text("abc")).array()[..4], [0x64, 0x37, 0xb3, 0xac]);
 /// ```
-pub fn blake3(data: &[u8]) -> [u8; 32] {
-    blake3::hash(data).into()
+pub fn blake3(data: &Data) -> Data {
+    Data::from_array(blake3::hash(data.array()).as_bytes())
 }
 
-/// A SHA-1 hasher, a piece at a time: [`update`](Sha1::update) with each piece in order, then [`finalize`](Sha1::finalize) for the same 20 bytes [`sha1`] gives all at once.
+/// The SHA-256 hash of text, as base32, the shortcut for the common case: text to Data, hashed, and out as the form icarus keeps hash values in.
 ///
 /// ```
-/// let mut h = zootella_ergo::Sha1::new();
-/// h.update(b"a");
-/// assert_eq!(h.finalize(), zootella_ergo::sha1(b"a")); // the hash so far, which leaves the hasher going
-/// h.update(b"bc");
-/// assert_eq!(h.finalize(), zootella_ergo::sha1(b"abc"));
+/// assert_eq!(zootella_ergo::hash_text("hello"), "FTZE3OS7WCRQ4JXIHMVMLOPCTYNRMHS4D6TUEXTTAQZWFE4LTASA");
+/// ```
+pub fn hash_text(s: &str) -> String {
+    sha256(&Data::from_text(s)).base32()
+}
+
+/// A SHA-1 hasher, a piece at a time: [`update`](Sha1::update) with each piece in order, each a Data, then [`finalize`](Sha1::finalize) for the same Data of 20 bytes [`sha1`] gives all at once.
+///
+/// ```
+/// use zootella_ergo::{Data, Sha1, sha1};
+/// let mut h = Sha1::new();
+/// h.update(&Data::from_text("a"));
+/// assert_eq!(h.finalize(), sha1(&Data::from_text("a"))); // the hash so far, which leaves the hasher going
+/// h.update(&Data::from_text("bc"));
+/// assert_eq!(h.finalize(), sha1(&Data::from_text("abc")));
 /// ```
 #[derive(Clone, Debug, Default)]
 pub struct Sha1(sha1::Sha1);
@@ -460,12 +931,12 @@ impl Sha1 {
         Self::default()
     }
     /// Hash the next piece.
-    pub fn update(&mut self, data: &[u8]) {
-        sha1::Digest::update(&mut self.0, data);
+    pub fn update(&mut self, data: &Data) {
+        sha1::Digest::update(&mut self.0, data.array());
     }
     /// The hash of every piece so far, from a copy, so the hasher can take more.
-    pub fn finalize(&self) -> [u8; 20] {
-        sha1::Digest::finalize(self.0.clone()).into()
+    pub fn finalize(&self) -> Data {
+        Data::from(sha1::Digest::finalize(self.0.clone()).to_vec())
     }
 }
 
@@ -479,12 +950,12 @@ impl Sha256 {
         Self::default()
     }
     /// Hash the next piece.
-    pub fn update(&mut self, data: &[u8]) {
-        sha2::Digest::update(&mut self.0, data);
+    pub fn update(&mut self, data: &Data) {
+        sha2::Digest::update(&mut self.0, data.array());
     }
     /// The hash of every piece so far, from a copy, so the hasher can take more.
-    pub fn finalize(&self) -> [u8; 32] {
-        sha2::Digest::finalize(self.0.clone()).into()
+    pub fn finalize(&self) -> Data {
+        Data::from(sha2::Digest::finalize(self.0.clone()).to_vec())
     }
 }
 
@@ -498,19 +969,19 @@ impl Blake3 {
         Self::default()
     }
     /// Hash the next piece.
-    pub fn update(&mut self, data: &[u8]) {
-        self.0.update(data);
+    pub fn update(&mut self, data: &Data) {
+        self.0.update(data.array());
     }
     /// The hash of every piece so far; the blake3 crate's finalize leaves its hasher able to take more on its own.
-    pub fn finalize(&self) -> [u8; 32] {
-        self.0.finalize().into()
+    pub fn finalize(&self) -> Data {
+        Data::from_array(self.0.finalize().as_bytes())
     }
 }
 
-// each hasher is an io::Write, so io::copy can feed one from a file or any other reader; hashing never fails, so neither does a write
+// each hasher is also an io::Write, which takes the language's own bytes, so io::copy can feed one straight from a file or any other reader without making a Data of each read; hashing never fails, so neither does a write
 impl std::io::Write for Sha1 {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        self.update(data);
+        sha1::Digest::update(&mut self.0, data);
         Ok(data.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -519,7 +990,7 @@ impl std::io::Write for Sha1 {
 }
 impl std::io::Write for Sha256 {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        self.update(data);
+        sha2::Digest::update(&mut self.0, data);
         Ok(data.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -528,10 +999,337 @@ impl std::io::Write for Sha256 {
 }
 impl std::io::Write for Blake3 {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        self.update(data);
+        self.0.update(data);
         Ok(data.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+// hash measure
+
+// The fuji hashes are two of ergo's own, from icarus, and both are SHA-256 over a summary of a file rather than over the file itself. The piece hash covers every byte: it cuts the file into 4 MiB pieces, hashes each one, and hashes the list of those hashes. The tip hash covers almost none of them: it hashes the file's first 4 KiB, 4 KiB from its middle, and its last two, at most 16 KiB however large the file, so it's done in a few reads and finds likely copies of a file across millions of others for the cost of those few reads each. A file of 16 KiB or less is its own tip. Each summary starts with a title that names the protocol and the file's size, like "Fuji.Tips.SHA256.4KiB.5.", so two files of different sizes never share a hash, even with identical tips.
+//
+// The pieces are there by design, for JavaScript, whose Web Crypto hashes only all at once: hashing 4 MiB pieces and then the list of them lets a page hash a file of any size at Web Crypto's full speed. Here each piece fills a vector of its own, which moves into its Data without a copy, where JavaScript slides a conveyor belt. The tip hash can come two ways that must agree: from a file, by seeking to just the stripes, or from a stream, by noticing the stripes as they pass on the way to the piece hash.
+
+/// The pieces of a file at a unit, and the stripes the tip hash reads, each a start and end measured from the start of the file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HashMeasurement {
+    /// Total number of pieces.
+    pub pieces: u64,
+    /// Quantity of complete pieces.
+    pub complete: u64,
+    /// Byte size of the last piece if it is a fragment, or zero.
+    pub fragment: u64,
+    /// The stripes the tip hash reads, each a start and an end, not a start and a length.
+    pub stripes: Vec<(u64, u64)>,
+    /// How many bytes all the stripes hold.
+    pub stripe_size: u64,
+}
+
+/// Given a file size and a unit, measure the pieces of that size, and the stripes the tip hash reads 📏.
+///
+/// ```
+/// let m = zootella_ergo::hash_measure(17, 4);
+/// assert_eq!(m.stripes, [(0, 4), (8, 17)]); // the first stripe, then the middle, next to last, and last together
+/// ```
+///
+/// # Panics
+///
+/// Panics unless both the file size and the unit are 1 or more bytes, a bug in the caller.
+pub fn hash_measure(file: u64, unit: u64) -> HashMeasurement {
+    assert!(
+        file >= 1 && unit >= 1,
+        "not a file and unit to measure: {file}, {unit}"
+    );
+    let pieces = file.div_ceil(unit);
+    let complete = file / unit;
+    let fragment = file % unit;
+    if file <= 4 * unit {
+        // file size is 4 units or less, so just hash the whole thing
+        return HashMeasurement {
+            pieces,
+            complete,
+            fragment,
+            stripes: vec![(0, file)],
+            stripe_size: file,
+        };
+    }
+    let first = 0;
+    let middle = file / (2 * unit) * unit; // byte index of middle piece
+    let penultimate = (pieces - 2) * unit; // second to last piece, must always be complete
+    let last_size = if fragment > 0 { fragment } else { unit }; // how big the last stripe is
+    let mut stripes = vec![(first, first + unit)]; // first and middle never touch
+    if middle + unit == penultimate {
+        stripes.push((middle, middle + unit + unit + last_size)); // but middle and penultimate can, and penultimate and last always do
+    } else {
+        stripes.push((middle, middle + unit)); // middle with space before and after
+        stripes.push((penultimate, penultimate + unit + last_size));
+    }
+    HashMeasurement {
+        pieces,
+        complete,
+        fragment,
+        stripes,
+        stripe_size: 3 * unit + last_size,
+    }
+}
+
+/// Given a foreground stripe and a background pattern of stripes that don't touch or overlap, the ranges where they overlap, each a start and end from the start, and an empty list for none.
+pub fn hash_stripe_overlap(foreground: (u64, u64), background: &[(u64, u64)]) -> Vec<(u64, u64)> {
+    let (a, b) = foreground;
+    background
+        .iter()
+        .filter(|&&(c, d)| a < d && b > c) // there's an overlap!
+        .map(|&(c, d)| (a.max(c), b.min(d)))
+        .collect()
+}
+
+// hash file and stream
+
+/// One of a protocol's two units: the title its summary starts with, and the size of a piece or a stripe.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HashUnit {
+    /// The title the summary starts with, before the file's size.
+    pub title: String,
+    /// The size of a piece, or of a stripe, in bytes.
+    pub size: u64,
+}
+
+/// The units of the piece hash and the tip hash. The default is the fuji protocol, a new simple protocol that can hash huge files on both the server and the page 🗻.
+///
+/// 4 MiB hashes in ~10ms similar to the frequency of page animation frames, uploads in under a second over a typical cable modem, and keeps the index of hash values smaller than the piece size for files under 500 GB 🗄️. 4 KiB matches the cluster and sector size on Windows NTFS and the block size on Mac APFS, so hard drive reads can be as fast as possible 💽.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HashProtocol {
+    /// The piece hash's title and piece size.
+    pub pieces: HashUnit,
+    /// The tip hash's title and stripe size.
+    pub tips: HashUnit,
+}
+
+impl Default for HashProtocol {
+    fn default() -> Self {
+        HashProtocol {
+            pieces: HashUnit {
+                title: "Fuji.Pieces.SHA256.4MiB.".to_string(),
+                size: 4 * size::MB,
+            },
+            tips: HashUnit {
+                title: "Fuji.Tips.SHA256.4KiB.".to_string(),
+                size: 4 * size::KB,
+            },
+        }
+    }
+}
+
+/// What hash_file and hash_stream know so far, given to a progress callback as it changes and returned at the end.
+#[derive(Clone, Debug)]
+pub struct HashStatus {
+    /// The size the file was said to be.
+    pub total_size: u64,
+    /// How much of it has been hashed.
+    pub hashed_size: u64,
+    /// The tip hash, once it's done.
+    pub tip_hash: Option<Data>,
+    /// The piece hash, once it's done, from hash_stream only.
+    pub piece_hash: Option<Data>,
+    /// A tick, milliseconds since 1970.
+    pub start_time: i64,
+    /// When we last changed anything here.
+    pub update_time: i64,
+    /// Milliseconds, once it's done.
+    pub duration: Option<i64>,
+}
+
+/// Given a file to read that can seek, and its size, quickly compute just the tip hash with the fuji protocol, reading only the stripes; [`HashProtocol::hash_file`] takes another protocol.
+///
+/// # Panics
+///
+/// Panics if `size` is zero, a bug in the caller: an empty file has no fuji hash.
+pub fn hash_file<F: std::io::Read + std::io::Seek>(
+    file: &mut F,
+    size: u64,
+) -> std::io::Result<HashStatus> {
+    HashProtocol::default().hash_file(file, size)
+}
+
+/// Given a stream to read and its size, compute both the tip hash and the piece hash with the fuji protocol in one pass, telling `on_progress` as each piece is hashed; [`HashProtocol::hash_stream`] takes another protocol.
+///
+/// # Panics
+///
+/// Panics if `size` is zero, a bug in the caller: an empty file has no fuji hash.
+pub fn hash_stream<R: std::io::Read>(
+    stream: &mut R,
+    size: u64,
+    on_progress: impl FnMut(&HashStatus),
+) -> std::io::Result<HashStatus> {
+    HashProtocol::default().hash_stream(stream, size, on_progress)
+}
+
+impl HashProtocol {
+    /// [`hash_file`] with this protocol.
+    pub fn hash_file<F: std::io::Read + std::io::Seek>(
+        &self,
+        file: &mut F,
+        size: u64,
+    ) -> std::io::Result<HashStatus> {
+        // based on the file size, pick stripes at the start, middle, and end for us to hash quickly
+        let measure = hash_measure(size, self.tips.size);
+        let mut status = new_status(size);
+
+        // for tip hashing, the summary we'll hash is the title followed by stripes of file data (hashing file data, not hashes); different sized files hash differently even with identical tips
+        let title = Data::from_text(&format!("{}{size}.", self.tips.title));
+        let mut tips = Bin::new(title.size() + count_usize(measure.stripe_size));
+        tips.add(&title);
+        for &(start, end) in &measure.stripes {
+            file.seek(std::io::SeekFrom::Start(start))?;
+            let mut stripe = vec![0; count_usize(end - start)];
+            file.read_exact(&mut stripe)?;
+            tips.add(&Data::from(stripe));
+        }
+
+        // hash the summary of the file in the bin, which must be exactly full, a check on our prediction of how much data we'd hash
+        status.tip_hash = Some(sha256(&full(&tips)));
+        status.hashed_size = measure.stripe_size; // we actually hashed more because of the title, but don't count this as to speed
+        finish(&mut status);
+        Ok(status)
+    }
+
+    /// [`hash_stream`] with this protocol.
+    pub fn hash_stream<R: std::io::Read>(
+        &self,
+        stream: &mut R,
+        size: u64,
+        mut on_progress: impl FnMut(&HashStatus),
+    ) -> std::io::Result<HashStatus> {
+        let measure_pieces = hash_measure(size, self.pieces.size); // measurements for the piece hash
+        let measure_tips = hash_measure(size, self.tips.size); // and for the tip hash, which we'll peek for through the stream
+        let mut status = new_status(size);
+
+        // for the pieces hash, the summary we'll hash is the title followed by hashes of pieces of file data, each SHA-256 hash 32 bytes (hashing hashes, not file data)
+        let pieces_title = Data::from_text(&format!("{}{size}.", self.pieces.title));
+        let mut pieces = Bin::new(pieces_title.size() + 32 * count_usize(measure_pieces.pieces));
+        pieces.add(&pieces_title);
+
+        // for the tips hash, the summary we'll hash is the title followed by the start, middle, and end stripes of data
+        let tips_title = Data::from_text(&format!("{}{size}.", self.tips.title));
+        let mut tips = Bin::new(tips_title.size() + count_usize(measure_tips.stripe_size));
+        tips.add(&tips_title);
+
+        let piece_size = count_usize(self.pieces.size);
+        let mut piece = Vec::with_capacity(piece_size); // the piece we're filling, which moves into a Data without a copy once it's full
+        let mut buffer = vec![0; 64 * size::KB as usize]; // each read from the stream lands here
+        let mut address = 0u64; // how far into the stream each box that arrives is
+        loop {
+            let n = match stream.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue, // a signal interrupted the read; read again
+                Err(e) => return Err(e),
+            };
+
+            // a new delivery of bytes from the stream has arrived! 📦
+            let delivery = &buffer[..n];
+            let stripe = (address, address + n as u64); // where in the stream this box of data is
+            address += n as u64; // outside the box, move address past this box to use to mark the start of the next one
+            if address > size {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("the stream is longer than the {size} bytes it was said to be"),
+                ));
+            }
+
+            // first, for the tip hash, we don't have random access through the file, but we do through this box!
+            for (start, end) in hash_stripe_overlap(stripe, &measure_tips.stripes) {
+                tips.add(&Data::from_array(
+                    &delivery[count_usize(start - stripe.0)..count_usize(end - stripe.0)],
+                )); // subtract box address to clip in data
+            }
+
+            // second, for the piece hash, shovel bytes from the box into the piece until the box is empty 🪏
+            let mut shoveled = 0; // we move this index over the bytes in the box as we process them
+            while shoveled < n {
+                let shovel = (n - shoveled).min(piece_size - piece.len());
+                piece.extend_from_slice(&delivery[shoveled..shoveled + shovel]);
+                shoveled += shovel;
+                if piece.len() == piece_size {
+                    let full_piece = std::mem::replace(&mut piece, Vec::with_capacity(piece_size));
+                    hash_piece(&mut pieces, &mut status, full_piece, &mut on_progress);
+                }
+            }
+        }
+
+        // most files will end with a fragment piece smaller than a full piece
+        if !piece.is_empty() {
+            hash_piece(&mut pieces, &mut status, piece, &mut on_progress);
+        }
+        if status.hashed_size != size {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!(
+                    "the stream was {} bytes, not the {size} it was said to be",
+                    status.hashed_size
+                ),
+            ));
+        }
+
+        // hash the summaries of the file in the bins
+        status.piece_hash = Some(sha256(&full(&pieces)));
+        status.tip_hash = Some(sha256(&full(&tips)));
+        finish(&mut status);
+        on_progress(&status);
+        Ok(status)
+    }
+}
+
+/// Hash a piece and add its hash to the summary, then say so.
+fn hash_piece(
+    pieces: &mut Bin,
+    status: &mut HashStatus,
+    piece: Vec<u8>,
+    on_progress: &mut impl FnMut(&HashStatus),
+) {
+    status.hashed_size += piece.len() as u64;
+    pieces.add(&sha256(&Data::from(piece)));
+    status.update_time = now();
+    on_progress(status);
+}
+
+/// The Data a Bin holds, which must be exactly full; a Bin that isn't means this code predicted wrong how much data it would hash, a bug here.
+fn full(bin: &Bin) -> Data {
+    assert_eq!(bin.size(), bin.capacity(), "a Bin isn't full");
+    bin.data()
+}
+
+/// A count of bytes as a usize, which every machine this runs on holds a file's size in.
+fn count_usize(n: u64) -> usize {
+    usize::try_from(n).expect("a count of bytes fits in a usize")
+}
+
+/// The tick now, milliseconds since 1970.
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+}
+
+/// A status at the start.
+fn new_status(size: u64) -> HashStatus {
+    let t = now();
+    HashStatus {
+        total_size: size,
+        hashed_size: 0,
+        tip_hash: None,
+        piece_hash: None,
+        start_time: t,
+        update_time: t,
+        duration: None,
+    }
+}
+
+/// A status at the end, with its duration.
+fn finish(status: &mut HashStatus) {
+    status.update_time = now();
+    status.duration = Some(status.update_time - status.start_time);
 }

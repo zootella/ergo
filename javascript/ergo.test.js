@@ -18,6 +18,11 @@ import {
   Sha1,
   Sha256,
   Blake3,
+  hashText,
+  Data,
+  Bin,
+  hashFile,
+  hashStream,
 } from './ergo.js'
 import { call } from './driver.js'
 import { startEditions, stopEditions } from './editions.js'
@@ -135,17 +140,65 @@ describe('Tag', () => {
   })
 })
 
+//      _       _
+//   __| | __ _| |_ __ _
+//  / _` |/ _` | __/ _` |
+// | (_| | (_| | || (_| |
+//  \__,_|\__,_|\__\__,_|
+//
+
+describe('Data', () => {
+  test('holds bytes, and speaks every form they travel in', () => {
+    // #region data
+    let d = Data({ text: 'hello' }) //bytes, from text
+    let forms = [d.base16(), d.base32(), d.base62(), d.base64()] //out in any form: 68656c6c6f, NBSWY3DP, Q6LhR6z, aGVsbG8=
+    let back = Data({ base62: 'Q6LhR6z' }).text() //and back from any, each read exactly: "hello"
+    let part = d.clipView(1, 3).text() //part of it, without copying: "el"
+    let b = Bin(6) //a set number of bytes, filled a byte or a Data at a time
+    b.add(d)
+    b.add(0x21)
+    let whole = b.data().text() //"hello!"
+    // #endregion data
+    expect(forms).toEqual(['68656c6c6f', 'NBSWY3DP', 'Q6LhR6z', 'aGVsbG8='])
+    expect(back).toBe('hello')
+    expect(part).toBe('el')
+    expect(whole).toBe('hello!')
+  })
+  test('demonstration of javascript arrays and buffers through clipping while intentionally choosing viewing or copying', () => {
+    let text = 'ABCDEFGHIJKL' //12 letters
+    let encoder = new TextEncoder()
+    let a = encoder.encode(text) //turn the text into bytes; makes a buffer and returns an array that looks at the buffer
+    let b = a.buffer //get a reference to the underlying buffer
+    expect(a instanceof Uint8Array).toBe(true)
+    expect(b instanceof ArrayBuffer).toBe(true)
+
+    expect(a.length).toBe(12)
+    expect(a.byteLength).toBe(12) //arrays have .length and .byteLength
+    expect(b.byteLength).toBe(12) //buffers only have .byteLength
+    let { start, end, length } = { start: 3, end: 6, length: 3 } //most js apis take (start, end) but some take (start, length)
+
+    let a1 = a.subarray(start, end) //(1) array, view
+    let a2 = a.slice(start, end) //(2) array, copy: array slice makes a copy
+    let a3 = new Uint8Array(b, start, length) //(3) buffer, view: note length here, not end
+    let b4 = b.slice(start, end) //(4) buffer, copy: buffer slice makes a copy
+    let a4 = new Uint8Array(b4) //and the array constructor clips a new view around the given buffer
+
+    expect(a1 instanceof Uint8Array).toBe(true)
+    expect(a2 instanceof Uint8Array).toBe(true)
+    expect(a3 instanceof Uint8Array).toBe(true)
+    expect(a4 instanceof Uint8Array).toBe(true) //array methods subarray and slice and array constructor make arrays
+    expect(b4 instanceof ArrayBuffer).toBe(true) //buffer slice produces a buffer
+    expect(Data({ array: a1 }).text()).toBe('DEF') //and a Data looks at any of them the same way
+    expect(Data({ buffer: b4 }).text()).toBe('DEF')
+  })
+})
+
 //  _               _
 // | |__   __ _ ___| |__
 // | '_ \ / _` / __| '_ \
 // | | | | (_| \__ \ | | |
 // |_| |_|\__,_|___/_| |_|
 //
-
-//lowercase base16, the form the world shows a hash in; a test can lean on node's Buffer, where the edition itself can't
-function hex(bytes) {
-  return Buffer.from(bytes).toString('hex')
-}
 
 //the three hashes by name, with the function that takes all the bytes at once and the hasher that takes a piece at a time
 const hashPairs = [
@@ -157,37 +210,62 @@ const hashPairs = [
 describe('hash', () => {
   test('hashes bytes all at once, and a file a piece at a time', async () => {
     // #region hash
-    let d = await sha256(new TextEncoder().encode('hello')) //all at once, for bytes already in memory: 32 bytes
+    let d = await sha256(Data({ text: 'hello' })) //all at once, for bytes already in memory: a Data of 32 bytes, out in any form
     let file = new Blob(['hello']) //or a File the user chose, of any size
     let hashers = [Sha1(), Sha256(), Blake3()] //or a piece at a time, all three from one read of the file
     let reader = file.stream().getReader()
     while (true) {
       let { done, value } = await reader.read()
       if (done) break
-      for (let h of hashers) h.update(value)
+      for (let h of hashers) h.update(Data({ array: value })) //a Data looks at each read without copying it
     }
     let [d1, d256, db3] = hashers.map((h) => h.digest())
     // #endregion hash
-    expect(hex(d)).toBe(
+    expect(d.base16()).toBe(
       '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824',
     )
-    expect(hex(d1)).toBe('aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d')
-    expect(hex(d256)).toBe(hex(d))
-    expect(hex(db3)).toBe(
+    expect(d1.base16()).toBe('aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d')
+    expect(d256.base16()).toBe(d.base16())
+    expect(db3.base16()).toBe(
       'ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f',
     )
+    expect(await hashText('hello')).toBe(
+      (await sha256(Data({ text: 'hello' }))).base32(),
+    ) //and the shortcut for text, in base32
   })
   test("digest doesn't finish a hasher, which keeps going for the hash of everything so far", async () => {
-    let a = new Uint8Array([0x61])
-    let ab = new Uint8Array([0x61, 0x62])
+    let a = Data({ text: 'a' })
+    let ab = Data({ text: 'ab' })
     for (let [name, all, Hasher] of hashPairs) {
       let h = Hasher()
       h.update(a)
-      expect(hex(h.digest()), name).toBe(hex(await all(a)))
-      expect(hex(h.digest()), name).toBe(hex(await all(a))) //a second digest is the same answer
-      h.update(ab.subarray(1))
-      expect(hex(h.digest()), name).toBe(hex(await all(ab))) //and the hasher took more after both
+      expect(h.digest().base16(), name).toBe((await all(a)).base16())
+      expect(h.digest().base16(), name).toBe((await all(a)).base16()) //a second digest is the same answer
+      h.update(ab.clipView(1, 2))
+      expect(h.digest().base16(), name).toBe((await all(ab)).base16()) //and the hasher took more after both
     }
+  })
+})
+
+describe('fuji hashes', () => {
+  test('hash a file quickly by its tips, and wholly by its pieces', async () => {
+    // #region fuji
+    let file = new Blob(['hello']) //or a File the user chose, of any size
+    let { tipHash } = await hashFile({ file, size: file.size }) //the tip hash, from a few small slices of the file
+    let { pieceHash } = await hashStream({
+      stream: file.stream(),
+      size: file.size,
+    }) //the piece hash, from one read of all of it, which gives the tip hash too
+    // #endregion fuji
+    expect(tipHash.base32()).toBe(
+      'BSOEFHWYKUFE2ZEYFGKAE2X4IZXTXXCDJZQ2YRGKLMAETUJDTIHQ',
+    )
+    expect(pieceHash.base32()).toBe(
+      'AD4G5U6L4LJC4DYUIUSFRIYHH5KMRVHCLOQQAKAPNNPFCRAUIV3Q',
+    )
+    expect(tipHash.base32()).toBe(
+      await hashText('Fuji.Tips.SHA256.4KiB.5.hello'),
+    ) //confirm matching results when performing the hashing by hand ✏️
   })
 })
 
@@ -216,6 +294,21 @@ describe('editions', () => {
         }
       })
     }
+  })
+
+  //random bytes can't be pinned by a vector either, past their size; this checks that every edition's are new each time
+  describe('random Data, every edition', () => {
+    test('is as many bytes as asked for, and never repeats', async () => {
+      for (let [name, e] of Object.entries(editions)) {
+        let seen = new Set()
+        for (let i = 0; i < 100; i++) {
+          let s = await e.Data({ random: 16 }, 'base16')
+          expect(s, name).toMatch(/^[0-9a-f]{32}$/)
+          expect(seen.has(s), name).toBe(false)
+          seen.add(s)
+        }
+      }
+    })
   })
 
   //Tag is random, so the vectors can't pin it; these scripted tests check what every edition's tags have in common
@@ -279,13 +372,6 @@ function randomTick(center, radius) {
   return Math.min(Math.max(t, 0), lastTick)
 }
 
-//n random bytes; getRandomValues fills at most 65536 at a call, so fill in steps
-function randomBytes(n) {
-  let b = new Uint8Array(n)
-  for (let i = 0; i < n; i += 65536)
-    crypto.getRandomValues(b.subarray(i, Math.min(i + 65536, n)))
-  return b
-}
 //a random length, mostly short to land near the 64-byte blocks of the SHA hashes, sometimes long enough to cross several of BLAKE3's 1024-byte chunks
 function randomLength() {
   let r = Math.random()
@@ -296,15 +382,15 @@ function randomLength() {
 //data cut into one to four pieces at random places, where a piece is empty when two cuts land together or at an end, and empty data is sometimes no pieces at all
 function randomPieces(data) {
   let cuts = Array.from({ length: Math.floor(Math.random() * 4) }, () =>
-    Math.floor(Math.random() * (data.length + 1)),
+    Math.floor(Math.random() * (data.size() + 1)),
   ).sort((a, b) => a - b)
   let pieces = []
   let start = 0
-  for (let cut of [...cuts, data.length]) {
-    pieces.push(data.subarray(start, cut))
+  for (let cut of [...cuts, data.size()]) {
+    pieces.push(data.clipView(start, cut))
     start = cut
   }
-  if (data.length == 0 && Math.random() < 0.5) return [] //sometimes no pieces at all, which is also the empty input
+  if (data.size() == 0 && Math.random() < 0.5) return [] //sometimes no pieces at all, which is also the empty input
   return pieces
 }
 
@@ -351,7 +437,7 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
   test(
     'each hash runs as fast as the edition can, in javascript alone, in-process',
     async () => {
-      let data = randomBytes(Size.mb) //one mebibyte of random bytes, hashed again and again
+      let data = Data({ random: Size.mb }) //one mebibyte of random bytes, hashed again and again
       let share = fuzzSeconds / hashPairs.length //an even share of the seconds for each hash
       let said = []
       for (let [name, all, Hasher] of hashPairs) {
@@ -363,9 +449,9 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
           count++
         } while (Date.now() < stop) //at least once, however few the seconds
         let h = Hasher()
-        h.update(data.subarray(0, 1000)) //and once a piece at a time, at a split that lines up with nothing, which must agree
-        h.update(data.subarray(1000))
-        if (hex(h.digest()) != hex(last))
+        h.update(data.clipView(0, 1000)) //and once a piece at a time, at a split that lines up with nothing, which must agree
+        h.update(data.clipView(1000, data.size()))
+        if (h.digest().base16() != last.base16())
           throw new Error(`${name} disagreed with itself a piece at a time`)
         said.push(`${name} ${Math.round(count / share)} MiB a second`)
       }
@@ -419,13 +505,13 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
         let stop = Date.now() + fuzzSeconds * Time.second
         let cycles = 0
         while (Date.now() < stop) {
-          let data = randomBytes(randomLength())
-          let whole = { base16: hex(data) } //bytes cross to the drivers tagged, as the vectors carry them
-          let pieces = randomPieces(data).map((p) => ({ base16: hex(p) }))
+          let data = Data({ random: randomLength() })
+          let whole = { base16: data.base16() } //bytes cross to the drivers tagged, as the vectors carry them
+          let pieces = randomPieces(data).map((p) => ({ base16: p.base16() }))
           await Promise.all(
             Object.entries(editions).map(async ([name, e]) => {
               for (let [hash, all, Hasher] of hashPairs) {
-                let expected = { base16: hex(await all(data)) } //javascript's answer in-process, which every edition's must match
+                let expected = { base16: (await all(data)).base16() } //javascript's answer in-process, which every edition's must match
                 expect(await e[hash](whole), name).toEqual(expected)
                 expect(await e[Hasher.name](pieces), name).toEqual(expected) //and the same a piece at a time, from the hasher by its protocol name, like Sha1; this is what pins noble's blake3 against the official implementation in rust and python
               }
@@ -438,6 +524,76 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
         )
       },
       (fuzzSeconds + 60) * Time.second,
+    )
+
+    test(
+      'random tiny files with random tiny protocols get the same fuji hashes in every edition, from a file and from a stream',
+      async () => {
+        let stop = Date.now() + fuzzSeconds * Time.second
+        let cycles = 0
+        while (Date.now() < stop) {
+          let between = (low, high) =>
+            low + Math.floor(Math.random() * (high - low + 1))
+          let protocol = {
+            pieces: {
+              title: 'Test.Pieces.SHA256.10-20B.',
+              size: between(10, 20),
+            },
+            tips: { title: 'Test.Tips.SHA256.5-15B.', size: between(5, 15) },
+          } //icarus's fuzz: small files and tiny block sizes, so every case crosses many pieces and stripes
+          let data = Data({ random: between(1, 500) })
+          let file = { base16: data.base16() }
+          let pieces = randomPieces(data).map((p) => ({ base16: p.base16() }))
+          let expected = await call('hashStream', [pieces, protocol])
+          let tip = await call('hashFile', [file, protocol])
+          expect(tip.tipHash).toEqual(expected.tipHash) //importantly, make sure we get the same tip hash from slicing the file and peeking at the stream!
+          await Promise.all(
+            Object.entries(editions).map(async ([name, e]) => {
+              expect(await e.hashStream(pieces, protocol), name).toEqual(
+                expected,
+              )
+              expect(await e.hashFile(file, protocol), name).toEqual(tip)
+            }),
+          )
+          cycles++
+        }
+        console.log(
+          `every edition fuzzed ${cycles} tiny files through both fuji hashes in ${fuzzSeconds} seconds, ${Math.round(cycles / fuzzSeconds)} a second`,
+        )
+      },
+      (fuzzSeconds + 60) * Time.second,
+    )
+
+    test(
+      "icarus's realistic files, with the real protocol, hash to icarus's answers in every edition",
+      async () => {
+        let b16 = (s) => ({ base16: Data({ base32: s }).base16() })
+        for (let [tip, piece, seed, size] of [
+          [
+            '3UHG26C6MLS3DDNBQIEPWKI23P7TBXTLW36ENWYOFTDSLMOS2MRA',
+            'I464HASPP45J62P4IC3ANMDWMJKWGLSKBTJQGYLD4PQ5KQIPFEJQ',
+            6317,
+            5911493,
+          ],
+          [
+            'FI5OSG7AGTDWIC7EGIOCT4RHUZ3ML2K4JALXH4F2SNMHSQKA666Q',
+            '63TIRHGUKSBOI54P6BPFW56GVCOIKXGWVQEDY353P6S4MX7YZIMA',
+            927,
+            6427647,
+          ],
+        ]) {
+          let file = { mulberry: seed, length: size } //medium files 🖼️, more than one 4 MiB piece each
+          for (let [name, e] of Object.entries(editions)) {
+            expect(await e.hashFile(file), name).toEqual({ tipHash: b16(tip) })
+            expect(await e.hashStream([file]), name).toEqual({
+              tipHash: b16(tip),
+              pieceHash: b16(piece),
+            })
+          }
+        }
+        //icarus's 19.7 MB and 28 MB files can't be pinned this way: its mulberry seed grows past the integers a double holds exactly at about 19.7 MB, so no generator that wraps at 32 bits can make their last bytes
+      },
+      (fuzzSeconds + 120) * Time.second,
     )
   })
 })
