@@ -410,7 +410,7 @@ pub fn check_tag(s: &str) -> &str {
 //
 // Each hash comes in two forms that give the same answer. The function takes all the bytes at once, like sha256(data), for data already in memory. The hasher takes them a piece at a time, as a file or a stream delivers them: make one with Sha256::new(), call update with each piece in order, and call finalize for the hash. A file of any size hashes this way in the memory of one piece, and a single read of the file can feed all three hashers. Finalize doesn't finish a hasher, as in the blake3 crate: update it again and finalize again for the hash of everything so far. Each hasher is also an io::Write, so io::copy can feed one straight from a reader.
 //
-// The standard library has no cryptographic hashes, so SHA-1 and SHA-256 come from RustCrypto's sha1 and sha2, and BLAKE3 from the blake3 crate, the official implementation by BLAKE3's authors. Each edition takes a hash from its platform where the platform has it in both forms, and otherwise from the official implementation or the best known one, and the shared vectors and the fuzz test hold all four to the same answers.
+// The standard library has no cryptographic hashes, so SHA-1 and SHA-256 come from RustCrypto's sha1 and sha2, and BLAKE3 from the blake3 crate, the official implementation by BLAKE3's authors. Each edition takes each hash from its platform wherever the platform has it, and otherwise from the official implementation or the best known one, and the shared vectors and the fuzz test hold all four to the same answers.
 
 /// The SHA-1 hash of `data`, 20 bytes. For matching a hash that already exists, like an older manifest's, since SHA-1 is broken for collisions.
 ///

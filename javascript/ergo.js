@@ -1,6 +1,6 @@
 //ergo, short for ergonomic: simple helper functions, the same in javascript, python, rust, and go
 
-//noble's hashes, plain javascript that runs the same in a page, a web worker, and node; the hash section below says why they're here
+//noble's hashes, plain javascript that runs the same in a page, a web worker, and node, for what the platform's web crypto can't do; the hash section below says what that is
 import { sha1 as nobleSha1 } from '@noble/hashes/legacy.js'
 import { sha256 as nobleSha256 } from '@noble/hashes/sha2.js'
 import { blake3 as nobleBlake3 } from '@noble/hashes/blake3.js'
@@ -240,21 +240,21 @@ export function checkTag(s) {
 /*
 Three hashes, each the one the world already knows. SHA-1 is the oldest, the one older manifests name a file by and git names its objects with. It's broken for collisions, two different inputs made to share a hash on purpose, so use it to match a hash that already exists, never to protect anything. SHA-256 is the standard everywhere today. BLAKE3 is the newest, built for speed as a tree, so pieces of one input can hash on many cores at once, and it's the one to name a file by for years to come.
 
-Each hash comes in two forms that give the same answer. The function takes all the bytes at once, like sha256(data), for data already in memory. The hasher takes them a piece at a time, as a file or a stream delivers them: make one with Sha256(), call update with each piece in order, and call digest for the hash. A file of any size hashes this way in the memory of one piece, and a single read of the file can feed all three hashers. Digest doesn't finish a hasher: update it again and digest again for the hash of everything so far.
+Each hash comes in two forms that give the same answer. The function takes all the bytes at once, like await sha256(data), for data already in memory. The hasher takes them a piece at a time, as a file or a stream delivers them: make one with Sha256(), call update with each piece in order, and call digest for the hash. A file of any size hashes this way in the memory of one piece, and a single read of the file can feed all three hashers. Digest doesn't finish a hasher: update it again and digest again for the hash of everything so far.
 
-The platform's Web Crypto has SHA-1 and SHA-256, but only all at once, from a promise, and no BLAKE3 at all, so this edition uses noble's hashes for all three: plain JavaScript with no dependencies of its own, the same in a page, a web worker, and Node. It's synchronous, so a page with a large file should hash in a web worker, or between the reads of a stream, which give the page a moment between pieces. Each edition takes a hash from its platform where the platform has it in both forms, and otherwise from the official implementation or the best known one, and the shared vectors and the fuzz test hold all four to the same answers.
+The platform's Web Crypto has SHA-1 and SHA-256 all at once, at full native speed, so sha1 and sha256 are Web Crypto, and answer with a promise, as it does; blake3 answers with a promise too, so the three read alike. Web Crypto has no hasher that takes a piece at a time, and no BLAKE3 at all, so the three hashers, and blake3 all at once, come from noble's hashes: plain JavaScript with no dependencies of its own, the same in a page, a web worker, and Node. The hashers are synchronous, so a page with a large file should hash in a web worker, or between the reads of a stream, which give the page a moment between pieces. And in a browser, Web Crypto is there only in a secure context, a page from https or localhost and its workers, so on a plain http page sha1 and sha256 refuse, where the hashers still work; node always has it. Each edition takes each hash from its platform wherever the platform has it, and otherwise from the official implementation or the best known one, and the shared vectors and the fuzz test hold all four to the same answers.
 */
 
-//the SHA-1 hash of data, a Uint8Array, as 20 bytes; for matching a hash that already exists, like an older manifest's, since SHA-1 is broken for collisions
-export function sha1(data) {
-  return nobleSha1(data)
+//the SHA-1 hash of data, a Uint8Array, as a promise of 20 bytes; for matching a hash that already exists, like an older manifest's, since SHA-1 is broken for collisions
+export async function sha1(data) {
+  return new Uint8Array(await crypto.subtle.digest('SHA-1', data)) //web crypto answers with an ArrayBuffer; ours is a Uint8Array, like everything else here
 }
-//the SHA-256 hash of data, a Uint8Array, as 32 bytes
-export function sha256(data) {
-  return nobleSha256(data)
+//the SHA-256 hash of data, a Uint8Array, as a promise of 32 bytes
+export async function sha256(data) {
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', data))
 }
-//the BLAKE3 hash of data, a Uint8Array, as 32 bytes
-export function blake3(data) {
+//the BLAKE3 hash of data, a Uint8Array, as a promise of 32 bytes; noble's is synchronous, and the promise is so all three read alike
+export async function blake3(data) {
   return nobleBlake3(data)
 }
 

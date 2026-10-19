@@ -1,6 +1,6 @@
 # @zootella/ergo
 
-Simple helper functions, the same in JavaScript, Python, Rust, and Go. This is the JavaScript edition: one ESM file that runs in a page, a web worker, and Node 22 or newer, on the platform and one dependency, noble's pure JavaScript hashes.
+Simple helper functions, the same in JavaScript, Python, Rust, and Go. This is the JavaScript edition: one ESM file that runs in a page, a web worker, and Node 22 or newer, on the platform and one dependency, noble's pure JavaScript hashes, for what the platform's Web Crypto can't do.
 
 ```
 npm install @zootella/ergo
@@ -23,7 +23,7 @@ saySize4(123456789) // "117 MB": four digits or less, with a unit
 let deadline = Date.now() + 2 * Time.hour // two hours from now, in milliseconds
 tickToText(deadline) // "2026oct15.2041.7125", a tick's short exact text
 tickToIso(deadline) // "2026-10-15T20:41:07.125Z", the same tick's iso text
-sha256(new TextEncoder().encode('hello')) // the SHA-256 hash, 32 bytes; sha1 and blake3 work the same way
+await sha256(new TextEncoder().encode('hello')) // the SHA-256 hash, 32 bytes; sha1 and blake3 work the same way
 ```
 
 Documentation for every function, in all four languages, is at [zootella.com](https://zootella.com). The source and the shared test suite are at [github.com/zootella/ergo](https://github.com/zootella/ergo).

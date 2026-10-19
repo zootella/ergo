@@ -157,7 +157,7 @@ const hashPairs = [
 describe('hash', () => {
   test('hashes bytes all at once, and a file a piece at a time', async () => {
     // #region hash
-    let d = sha256(new TextEncoder().encode('hello')) //all at once, for bytes already in memory: 32 bytes
+    let d = await sha256(new TextEncoder().encode('hello')) //all at once, for bytes already in memory: 32 bytes
     let file = new Blob(['hello']) //or a File the user chose, of any size
     let hashers = [Sha1(), Sha256(), Blake3()] //or a piece at a time, all three from one read of the file
     let reader = file.stream().getReader()
@@ -177,16 +177,16 @@ describe('hash', () => {
       'ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f',
     )
   })
-  test("digest doesn't finish a hasher, which keeps going for the hash of everything so far", () => {
+  test("digest doesn't finish a hasher, which keeps going for the hash of everything so far", async () => {
     let a = new Uint8Array([0x61])
     let ab = new Uint8Array([0x61, 0x62])
     for (let [name, all, Hasher] of hashPairs) {
       let h = Hasher()
       h.update(a)
-      expect(hex(h.digest()), name).toBe(hex(all(a)))
-      expect(hex(h.digest()), name).toBe(hex(all(a))) //a second digest is the same answer
+      expect(hex(h.digest()), name).toBe(hex(await all(a)))
+      expect(hex(h.digest()), name).toBe(hex(await all(a))) //a second digest is the same answer
       h.update(ab.subarray(1))
-      expect(hex(h.digest()), name).toBe(hex(all(ab))) //and the hasher took more after both
+      expect(hex(h.digest()), name).toBe(hex(await all(ab))) //and the hasher took more after both
     }
   })
 })
@@ -350,7 +350,7 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
 
   test(
     'each hash runs as fast as the edition can, in javascript alone, in-process',
-    () => {
+    async () => {
       let data = randomBytes(Size.mb) //one mebibyte of random bytes, hashed again and again
       let share = fuzzSeconds / hashPairs.length //an even share of the seconds for each hash
       let said = []
@@ -359,7 +359,7 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
         let count = 0
         let last
         do {
-          last = all(data)
+          last = await all(data) //web crypto's for sha1 and sha256, noble's for blake3
           count++
         } while (Date.now() < stop) //at least once, however few the seconds
         let h = Hasher()
@@ -425,7 +425,7 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
           await Promise.all(
             Object.entries(editions).map(async ([name, e]) => {
               for (let [hash, all, Hasher] of hashPairs) {
-                let expected = { base16: hex(all(data)) } //javascript's answer in-process, which every edition's must match
+                let expected = { base16: hex(await all(data)) } //javascript's answer in-process, which every edition's must match
                 expect(await e[hash](whole), name).toEqual(expected)
                 expect(await e[Hasher.name](pieces), name).toEqual(expected) //and the same a piece at a time, from the hasher by its protocol name, like Sha1; this is what pins noble's blake3 against the official implementation in rust and python
               }

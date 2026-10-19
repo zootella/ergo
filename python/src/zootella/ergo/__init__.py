@@ -334,7 +334,7 @@ def check_tag(s: str) -> str:
 #
 # Each hash comes in two forms that give the same answer. The function takes all the bytes at once, like sha256(data), for data already in memory. The hasher takes them a piece at a time, as a file or a stream delivers them: make one with SHA256(), call update with each piece in order, and call digest for the hash. A file of any size hashes this way in the memory of one piece, and a single read of the file can feed all three hashers. Digest doesn't finish a hasher, as in hashlib: update it again and digest again for the hash of everything so far.
 #
-# hashlib has SHA-1 and SHA-256, on OpenSSL or verified code of its own, and no BLAKE3, which CPython declined to add, so BLAKE3 comes from the blake3 package, the official Python binding to the official Rust implementation. Each edition takes a hash from its platform where the platform has it in both forms, and otherwise from the official implementation or the best known one, and the shared vectors and the fuzz test hold all four to the same answers.
+# hashlib has SHA-1 and SHA-256, on OpenSSL or verified code of its own, and no BLAKE3, which CPython declined to add, so BLAKE3 comes from the blake3 package, the official Python binding to the official Rust implementation. Each edition takes each hash from its platform wherever the platform has it, and otherwise from the official implementation or the best known one, and the shared vectors and the fuzz test hold all four to the same answers.
 
 
 def sha1(data: Buffer) -> bytes:
