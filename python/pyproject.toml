@@ -9,7 +9,7 @@ requires-python = ">=3.12"
 dependencies = [
     "blake3>=1.0.11",
 ]
-keywords = ["helpers", "size", "time", "constants"]
+keywords = ["helpers", "ergonomic", "size", "time", "tag", "base32", "base62", "hash", "sha256", "blake3"]
 
 [project.urls]
 Homepage = "https://zootella.com"

@@ -28,10 +28,16 @@
   },
   "keywords": [
     "helpers",
+    "ergonomic",
+    "isomorphic",
     "size",
     "time",
-    "constants",
-    "isomorphic"
+    "tag",
+    "base32",
+    "base62",
+    "hash",
+    "sha256",
+    "blake3"
   ],
   "author": "zootella",
   "license": "MIT",
