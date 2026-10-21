@@ -56,6 +56,172 @@ export const Time = /*#__PURE__*/ Object.freeze({
   month: 2629800000, //a twelfth of that year, also exact
 })
 
+/*
+sayDuration says a span of time for a person to read: how long something took, or how long ago it happened, like "2 hours 5 minutes" or "about 3 days ago". The template is the sentence it writes, with a # wherever a number goes. A tag is that #, any spaces, and the unit after it: years, months, weeks, days, hours, minutes, or seconds, or one of the short forms yrs, yr, y, mos, mo, wks, w, d, hrs, hr, h, mins, min, m, secs, sec, and s, written in any case. Seconds can also take a fraction, #.#, #.##, or #.###, for tenths, hundredths, or thousandths, and no other unit can. Each # after the point is a digit always written, so 1.5 seconds says "1.500" under #.###, the way Excel's 0.000 writes it rather than its #.###.
+
+The units a template names split the span between them, and a template lists them from largest to smallest. The largest takes everything above it, so a year said in days is 365, and each smaller unit takes what's left. Everything rounds down, so whatever is smaller than the smallest unit goes unsaid. A year and a month are Time.year and Time.month, the averages over the leap cycle, so sayDuration agrees with the rest of ergo, and a span of 365 days is a quarter of a day short of a year.
+
+A bare m is the one word that could be two units. On its own it's minutes, the way "5m" is in a feed, but because a template runs from largest to smallest, an m right after years, or right before weeks, days, or hours, can only be months, so "#y #m #d" says "1y 2m 3d" and "#d #h #m" says "1d 2h 3m".
+
+A plural, whole or short, comes out singular for exactly 1, in the case it was written in, so "# days" says "1 day" and "2 days", "# hrs" says "1 hr", and "# DAYS" says "1 DAY"; a single letter, like d, never changes.
+
+Units that come out zero at the start drop away, along with the text after them, so a template ready to say days can count up a task half an hour old: "#d #h #m #.##s" says "32m 55.45s", never "0d 0h 32m 55.45s". From the first unit that isn't zero, everything stays. A zero between two others stays, so a day and a second is "1 day 0 hours 0 minutes 1 second" rather than "1 day 1 second". And the smallest unit a template names is the precision it asks for, so it always shows, even on an exact amount: "#m #s" says "1m 0s" for exactly a minute. If every unit is zero, the last and smallest one says so, like "0 minutes".
+
+A unit only counts right after a #, so words and numbers around the tags pass through as they are: "about # days ago" says "about 3 days ago", and the d in "and" is only a letter. Whatever isn't a tag is written as it is, with no escaping and nothing refused, so a broken template writes text that's only wrong. The span is what must be right: a whole number of milliseconds within the integer ceiling, and anything else throws. A negative span says its size with a minus sign in front of everything, like "-2 hours 5 minutes", unless what it says is zero.
+*/
+
+//each word a tag can end with, whole or short, in lowercase, to the name of its unit in Time
+const durationUnits = {
+  years: 'year',
+  yrs: 'year',
+  yr: 'year',
+  y: 'year',
+  months: 'month',
+  mos: 'month',
+  mo: 'month',
+  weeks: 'week',
+  wks: 'week',
+  w: 'week',
+  days: 'day',
+  d: 'day',
+  hours: 'hour',
+  hrs: 'hour',
+  hr: 'hour',
+  h: 'hour',
+  minutes: 'minute',
+  mins: 'minute',
+  min: 'minute',
+  m: 'minute', //or months, by where it sits; sayDuration below decides
+  seconds: 'second',
+  secs: 'second',
+  sec: 'second',
+  s: 'second',
+}
+const durationTags =
+  /#(\.#{1,3})?( *)(years|yrs|yr|y|months|mos|mo|weeks|wks|w|days|d|hours|hrs|hr|h|minutes|mins|min|m|seconds|secs|sec|s)/gi //a #, a fraction for seconds, any spaces, and the unit's word, each longer word before its prefixes; blind to case, so the unit can be written in any case
+
+//say a span of milliseconds in the units a template names, like "# hours # minutes" for "2 hours 5 minutes"; one way, with no reader
+export function sayDuration(span, template) {
+  _checkSpan(span)
+  _checkTemplate(template)
+
+  //cut the template once, into its tags and the text around them
+  let texts = [] //the text before each tag, and then the text after the last one
+  let tags = [] //each tag's unit, the spaces and word it was written with, and how many digits of a second it wants
+  let at = 0 //where the text not yet cut begins
+  for (let match of template.matchAll(durationTags)) {
+    let [all, fraction, spaces, word] = match
+    let unit = durationUnits[word.toLowerCase()]
+    if (fraction && unit != 'second') continue //a fraction only says seconds; before any other unit, the whole match stays text, so its last # can't make a tag of its own
+    texts.push(template.slice(at, match.index))
+    tags.push({
+      unit,
+      spaces,
+      word,
+      digits: fraction ? fraction.length - 1 : 0,
+    })
+    at = match.index + all.length
+  }
+  texts.push(template.slice(at))
+  if (tags.length == 0) return template //no tags, so nothing to fill in
+
+  //a bare m is minutes, unless it sits where only months fit in a template that runs from largest to smallest: right after years, or right before weeks, days, or hours
+  for (let i = 0; i < tags.length; i++) {
+    if (tags[i].word.toLowerCase() != 'm') continue
+    let before = tags[i - 1]?.unit //the unit of the tag before this one, if there is one
+    let after = tags[i + 1]?.unit
+    if (
+      before == 'year' ||
+      after == 'week' ||
+      after == 'day' ||
+      after == 'hour'
+    )
+      tags[i].unit = 'month'
+  }
+
+  //split the span among the units named, largest first, each taking all of itself that fits in what's left
+  let units = [...new Set(tags.map((tag) => tag.unit))].sort(
+    (a, b) => Time[b] - Time[a],
+  )
+  let counts = {}
+  let left = Math.abs(span) //milliseconds not yet said; a negative span says its size, and gets its minus sign at the end
+  for (let unit of units) {
+    counts[unit] = Math.floor(left / Time[unit])
+    left -= counts[unit] * Time[unit]
+  } //left now holds the remainder that rounds away, or the fraction of a second
+
+  //write each tag, then keep everything from the first tag that isn't zero through the end
+  let said = tags.map((tag) => {
+    let number = String(counts[tag.unit])
+    if (tag.digits > 0) {
+      let fraction = Math.floor(left / 10 ** (3 - tag.digits)) //tenths, hundredths, or thousandths of the second, rounded down
+      number += '.' + String(fraction).padStart(tag.digits, '0')
+    }
+    let word = tag.word
+    if (number == '1' && word.length > 1 && /s$/i.test(word))
+      word = word.slice(0, -1) //a plural, whole or short, is singular for exactly 1, like day, hr, and DAY; the single letter s is seconds, not a plural, and never changes
+    return { text: number + tag.spaces + word, zero: Number(number) == 0 }
+  })
+  let first = said.findIndex((tag) => !tag.zero) //zeros at the start drop away, along with the text after them
+  let sign = ''
+  if (first == -1)
+    first = said.length - 1 //every unit is zero, so say the last and smallest, like "0 minutes"
+  else if (span < 0) sign = '-' //a minus sign only in front of something that isn't zero
+  let text = texts[0] //text before the first tag always stays, like "about"
+  for (let i = first; i < said.length; i++) text += said[i].text + texts[i + 1] //from there to the end, every tag and the text after it, so the smallest unit always shows, and so does text after the last tag, like "ago"
+  return sign + text
+}
+//a guard: pass a span through, or throw because it isn't a whole number of milliseconds within the integer ceiling
+function _checkSpan(span) {
+  if (!Number.isSafeInteger(span))
+    throw new Error(`not a span of milliseconds: ${span}`)
+  return span
+}
+//a guard: pass a template through, or throw because it isn't text; sayDuration and sayTick refuse nothing else about one
+function _checkTemplate(template) {
+  if (typeof template != 'string')
+    throw new Error(`expected template text: ${template}`)
+  return template
+}
+
+/*
+Three shortcuts sit on top of sayDuration, each with its template chosen for one use, in place of a template from the caller. They come from node, ergo's ancestor from 2013, which said time these three ways, and here each is a few lines of ergo.
+
+sayTimeRemaining says how long until something finishes, or how long it has run, in the units that matter at its size: two units while the larger is a single digit, like "9m 59s" and "1h 0m", and one unit after, like "10m" and "10h". It stays in hours up to 71 before it turns to days, since "71h" is plainer than "2d 23h" for something that finishes this week. sayTimeRemainingCoarse says the same, with the seconds rounded down to a multiple of 5, so a countdown on a page steps rather than flickers; the last five seconds still count down one at a time.
+
+sayTimeRace says how long something took to the millisecond, the way a race is timed: 5'15"223 is five minutes, fifteen seconds, and 223 milliseconds, with the minutes taking everything above them, so an hour and a quarter is 75'00"000. Its seconds and milliseconds are padded, which sayDuration never does, so it asks sayTick for them instead.
+*/
+
+//say how long remains in one or two units, like "45s", "9m 59s", "10m", "1h 0m", "10h", or "3d", for a progress bar or an estimate
+export function sayTimeRemaining(span) {
+  return _sayTimeRemaining(span, false)
+}
+//say how long remains like sayTimeRemaining, with the seconds rounded down to a multiple of 5, so a countdown isn't distracting
+export function sayTimeRemainingCoarse(span) {
+  return _sayTimeRemaining(span, true)
+}
+function _sayTimeRemaining(span, coarse) {
+  let size = Math.abs(_checkSpan(span)) //the size picks the template; a negative span gets its minus sign from sayDuration
+  if (coarse && size > 5 * Time.second) size -= size % (5 * Time.second) //down to a multiple of 5 seconds, while the last five still count one at a time
+  let signed = size //the size, with the sign of the span
+  if (span < 0) signed = -size
+
+  if (size < Time.minute) return sayDuration(signed, '#s') //"0s" to "59s"
+  if (size < 10 * Time.minute) return sayDuration(signed, '#m #s') //"1m 0s" to "9m 59s"
+  if (size < Time.hour) return sayDuration(signed, '#m') //"10m" to "59m"
+  if (size < 10 * Time.hour) return sayDuration(signed, '#h #m') //"1h 0m" to "9h 59m"
+  if (size < 3 * Time.day) return sayDuration(signed, '#h') //"10h" to "71h"
+  return sayDuration(signed, '#d') //"3d" and up
+}
+
+//say how long something took to the millisecond, the way a race is timed, like 5'15"223 for five minutes, fifteen seconds, and 223 milliseconds
+export function sayTimeRace(span) {
+  _checkSpan(span)
+  if (span < 0) return '-' + sayTimeRace(-span) //a negative span says its size, with a minus sign in front
+  let minutes = Math.floor(span / Time.minute) //the minutes take everything above them
+  return minutes + "'" + sayTick(span - minutes * Time.minute, 'ss"ttt') //the rest of the minute is a tick in the first minute of 1970, so sayTick pads its seconds and milliseconds
+}
+
 //  _   _      _
 // | |_(_) ___| | __
 // | __| |/ __| |/ /
@@ -72,20 +238,32 @@ Every function that takes a tick throws on a number that isn't one, because a ca
 */
 
 const lastTick = 253402300799999 //the last millisecond of 9999, which keeps a year at four digits in every edition
-const months = [
-  'jan',
-  'feb',
-  'mar',
-  'apr',
-  'may',
-  'jun',
-  'jul',
-  'aug',
-  'sep',
-  'oct',
-  'nov',
-  'dec',
-]
+
+//the months of the year and the days of the week, whole and in title case the way a sentence writes them, so a caller clips and then needs only toUpperCase or toLowerCase for the other two cases
+//in english, each short name is the first three letters, like "Aug" and "Thu", which the short form and sayTick both clip out; frozen, so no caller can change them under either
+export const monthNames = /*#__PURE__*/ Object.freeze([
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+])
+export const dayNames = /*#__PURE__*/ Object.freeze([
+  'Sunday', //first in every edition, the way javascript's getUTCDay and go's Weekday count from 0; python's own weekday() starts with monday, so a python caller who wants the week the other three keep has it here
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+])
 const isoPattern =
   /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})\.([0-9]{3})Z$/ //the one shape of the iso form
 
@@ -137,7 +315,7 @@ export function tickToText(t) {
   if (i > 0) depth = 4
   if (ms > 0) depth = 5
   let text = String(y)
-  if (depth >= 1) text += months[m - 1]
+  if (depth >= 1) text += monthNames[m - 1].slice(0, 3).toLowerCase() //the short name in lowercase, like "aug"
   if (depth >= 2) text += day
   if (depth >= 3) text += '.' + String(h).padStart(2, '0')
   if (depth >= 4) text += String(i).padStart(2, '0')
@@ -166,7 +344,10 @@ function _parseText(s) {
   let i = 0
   let ms = 0
   if (p1.length >= 7) {
-    m = months.indexOf(p1.slice(4, 7)) + 1 //0 if the month name isn't one of ours
+    m =
+      monthNames.findIndex(
+        (name) => name.slice(0, 3).toLowerCase() == p1.slice(4, 7),
+      ) + 1 //0 if the text isn't the short name of a month, in lowercase
     if (m == 0) return false
   }
   if (p1.length >= 8) {
@@ -186,6 +367,68 @@ function _parseText(s) {
   if (y < 1970 || day < 1 || day > 31 || h > 23 || i > 59 || ms > 59999)
     return false //bounds on each unit; the round trip rules out february 30
   return Date.UTC(y, m - 1, day, h, i) + ms
+}
+
+/*
+sayTick writes a tick for a person to read, in whatever shape a template of tags describes. "Mmm D, YYYY" says a date like "Aug 6, 2026" on a page, "YYYY-MM-DD hh24:mm:ss.ttt" stamps a line in a log, and the iso form is just "YYYY-MM-DDThh24:mm:ss.tttZ". It's the one-way companion to the two forms above, which each read back exactly. This one only writes, so a template can take any shape at all.
+
+Uppercase tags are the calendar, and lowercase tags are the clock. YYYY is the year. M and MM are the month's number, without and with a leading zero, and MMM and MMMM are its name, short and long. D and DD are the day of the month, and DDD and DDDD are the day of the week. A name comes out in the case of its tag, so MMMM is AUGUST, Mmmm is August, and mmmm is august.
+
+On the clock, h12 and h24 are the hour, each saying which clock it means, and hh12 and hh24 are the same with a leading zero. mm and ss are the minute and the second, always two digits, with no form that leaves the zero off, since five past one is 1:05 and never 1:5. t, tt, and ttt are tenths, hundredths, and thousandths of a second, as many digits as letters, rounded down so 59.999 never becomes 60. AA, aa, A, and a are PM, pm, P, and p, and it's up to the template to put them beside a twelve-hour hour.
+
+The two cases also keep the calendar and the clock apart on the page, so in "YYYY-MM-DD hh24:mm", a lowercase mm among the calendar's capitals, or a capital MM among the clock's lowercase, stands out as the mistake it is.
+
+The template is read once, left to right, taking the longest tag at each position, and whatever isn't a tag is written as it is. There's no escaping, so "YYYYY" writes the year and then a Y, like "2026Y". Each value goes straight to the output and is never read again, so a value can't make a tag: the A in AUG is only a letter. Words don't belong in a template, since a single M, D, t, A, or a is a tag, and so is a doubled mm or ss. Say the date with a small template, and put what it writes into the sentence, page, or log line around it.
+
+Some things are left out on purpose. There's no reader, since the two forms above are for reading. There's no two-digit year. There are no time zones: sayTick writes the fields of the tick it's given as they fall in UTC, and works the same for a moment anywhere on earth. Keep times in UTC, and if a person should see their own wall clock, shift the tick by their offset at the very end, just before saying it. And there's no localization: the names are English, the same everywhere, and a page that wants its reader's language can hand the tick to the browser's Intl.
+*/
+
+const sayTags =
+  /YYYY|MMMM|Mmmm|mmmm|MMM|Mmm|mmm|MM|M|DDDD|Dddd|dddd|DDD|Ddd|ddd|DD|D|hh12|hh24|h12|h24|mm|ss|ttt|tt|t|AA|aa|A|a/g //every tag, each longer one before its prefixes, since alternation takes the first that matches at a position rather than the longest
+
+//write tick t for a person to read, in the shape a template of tags describes, like "Mmm D, YYYY" for "Aug 6, 2026"; one way, with no reader
+export function sayTick(t, template) {
+  let d = new Date(checkTick(t))
+  _checkTemplate(template)
+  return template.replace(sayTags, (tag) => _sayTag(d, tag)) //one pass over the template; each value goes to the output and is never read again
+}
+//the text for one tag, from the moment in d as it falls in utc
+function _sayTag(d, tag) {
+  let month = d.getUTCMonth() //0 january through 11 december
+  let hour = d.getUTCHours() //0 through 23
+  let half = hour % 12 //the hour on a twelve-hour clock, where midnight and noon are 12 rather than 0
+  if (half == 0) half = 12
+  let ms = d.getUTCMilliseconds() //0 through 999
+
+  if (tag == 'YYYY') return String(d.getUTCFullYear()) //always four digits, since a tick stays within 1970 through 9999
+  if (tag == 'MM') return String(month + 1).padStart(2, '0')
+  if (tag == 'M') return String(month + 1)
+  if (tag == 'DD') return String(d.getUTCDate()).padStart(2, '0')
+  if (tag == 'D') return String(d.getUTCDate())
+  if (tag == 'hh24') return String(hour).padStart(2, '0')
+  if (tag == 'h24') return String(hour)
+  if (tag == 'hh12') return String(half).padStart(2, '0')
+  if (tag == 'h12') return String(half)
+  if (tag == 'mm') return String(d.getUTCMinutes()).padStart(2, '0')
+  if (tag == 'ss') return String(d.getUTCSeconds()).padStart(2, '0')
+  if (tag == 'ttt') return String(ms).padStart(3, '0')
+  if (tag == 'tt') return String(Math.floor(ms / 10)).padStart(2, '0') //rounded down, like t
+  if (tag == 't') return String(Math.floor(ms / 100)) //rounded down, so 59.99 is 59.9 and never 60.0
+
+  //the rest are words: the month's name, the weekday's name, or am and pm, each in the case of its tag
+  let word = ''
+  let first = tag[0].toLowerCase() //m for the month, d for the weekday, a for am and pm
+  if (first == 'm') word = monthNames[month]
+  if (first == 'd') word = dayNames[d.getUTCDay()]
+  if (first == 'a') word = hour < 12 ? 'AM' : 'PM'
+  if (tag.length < 4) word = word.slice(0, tag.length) //a shorter tag writes as many letters as it has: Aug for Mmm, P for A, and both letters of PM for AA
+  return _caseLike(word, tag)
+}
+//write a word in the case of the tag that asked for it: AUGUST for MMMM, August for Mmmm, and august for mmmm
+function _caseLike(word, tag) {
+  if (tag == tag.toUpperCase()) return word.toUpperCase() //every letter a capital, like MMMM, AA, and A
+  if (tag == tag.toLowerCase()) return word.toLowerCase() //none, like mmmm, aa, and a
+  return word //only the first, like Mmmm, which is how the names are kept
 }
 
 //  _

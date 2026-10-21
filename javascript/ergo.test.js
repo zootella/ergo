@@ -3,11 +3,18 @@ import {
   Size,
   saySize4,
   Time,
+  sayDuration,
+  sayTimeRemaining,
+  sayTimeRemainingCoarse,
+  sayTimeRace,
   tickToText,
   textToTick,
   tickToIso,
   isoToTick,
   hasTick,
+  sayTick,
+  monthNames,
+  dayNames,
   Tag,
   hasTag,
   checkTag,
@@ -94,6 +101,313 @@ describe('Time', () => {
     // #endregion time
     expect(deadline).toBe(1700007200000)
   })
+  test('demonstration of sayDuration, a guided tour of saying a span of time', () => {
+    //a template is the sentence you want, with a # wherever a number goes and a unit after each #
+    expect(
+      sayDuration(2 * Time.hour + 5 * Time.minute, '# hours # minutes'),
+    ).toBe('2 hours 5 minutes')
+
+    //whole words come out singular for exactly 1, so write the plural and let sayDuration choose
+    expect(sayDuration(Time.hour + Time.minute, '# hours # minutes')).toBe(
+      '1 hour 1 minute',
+    )
+
+    //name the units you want, and the largest takes everything above it: a year in days, in weeks, or in hours
+    expect(sayDuration(Time.year, '# days')).toBe('365 days')
+    expect(sayDuration(Time.year, '# weeks')).toBe('52 weeks')
+    expect(sayDuration(Time.year, '# hours')).toBe('8766 hours') //a year is 365 and a quarter days, and here the quarter day shows
+
+    //everything rounds down, so whatever is smaller than the smallest unit goes unsaid
+    expect(sayDuration(2 * Time.hour - 1, '# hours')).toBe('1 hour') //a millisecond short of two hours is still one hour
+
+    //short forms for tight spaces: a single letter never changes, and a short plural like hrs is singular for exactly 1
+    expect(
+      sayDuration(Time.day + 2 * Time.hour + 3 * Time.minute, '#d #h #m'),
+    ).toBe('1d 2h 3m')
+    expect(sayDuration(Time.hour + 5 * Time.minute, '# hr # min')).toBe(
+      '1 hr 5 min',
+    )
+    expect(sayDuration(Time.hour + Time.minute, '# hrs # mins')).toBe(
+      '1 hr 1 min',
+    )
+    expect(sayDuration(2 * Time.year + 3 * Time.month, '# yrs # mos')).toBe(
+      '2 yrs 3 mos',
+    ) //the way a profile says how long someone held a job
+
+    //units can be written in any case, and keep it
+    expect(
+      sayDuration(3 * Time.day + 4 * Time.hour, '# Days # Hours Left'),
+    ).toBe('3 Days 4 Hours Left')
+    expect(sayDuration(Time.hour, '# HOURS')).toBe('1 HOUR')
+
+    //a bare m is minutes on its own, as in a feed, and months where only months fit, between years and the units below a month
+    expect(sayDuration(5 * Time.minute, '#m ago')).toBe('5m ago')
+    expect(
+      sayDuration(Time.year + 2 * Time.month + 3 * Time.day, '#y #m #d'),
+    ).toBe('1y 2m 3d')
+    expect(
+      sayDuration(
+        Time.week + 2 * Time.day + 3 * Time.hour + 30 * Time.minute,
+        '#w #d #h #m',
+      ),
+    ).toBe('1w 2d 3h 30m') //the way an issue tracker logs work
+
+    //seconds alone can take a fraction, tenths, hundredths, or thousandths, rounded down, for a stopwatch or a benchmark
+    expect(sayDuration(83456, '# minutes #.### seconds')).toBe(
+      '1 minute 23.456 seconds',
+    )
+    expect(sayDuration(83456, '#.#s')).toBe('83.4s')
+
+    //zeros at the start drop away with the text after them, so one template can count up a task of any length
+    expect(sayDuration(32 * Time.minute + 55458, '#d #h #m #.##s')).toBe(
+      '32m 55.45s',
+    ) //half an hour in, from a template ready to say days
+    let full = '# years, # months, # days, # hours, # minutes, #.### seconds'
+    expect(sayDuration(Time.day + 250, full)).toBe(
+      '1 day, 0 hours, 0 minutes, 0.250 seconds',
+    ) //a zero between two others stays, rather than "1 day, 0.250 seconds", which reads like a slip
+    expect(sayDuration(0, full)).toBe('0.000 seconds') //and when every unit is zero, the smallest says so
+
+    //the smallest unit a template names is the precision it asks for, so it always shows, even on an exact amount
+    expect(sayDuration(Time.minute, '#m #s')).toBe('1m 0s')
+    expect(sayDuration(2 * Time.hour + 5 * Time.minute, full)).toBe(
+      '2 hours, 5 minutes, 0.000 seconds',
+    )
+
+    //words around the tags are fine, since a unit only counts right after a #
+    expect(sayDuration(3 * Time.hour, 'about # hours ago')).toBe(
+      'about 3 hours ago',
+    )
+    expect(
+      sayDuration(2 * Time.hour + 5 * Time.minute, '# hours and # minutes'),
+    ).toBe('2 hours and 5 minutes') //the d in "and" is only a letter
+    expect(sayDuration(2 * Time.hour, '# hours and # minutes')).toBe(
+      '2 hours and 0 minutes',
+    ) //the minutes are the precision, so they show at zero, and the sentence keeps its "and"
+    expect(sayDuration(3 * Time.day, '# days of the last 10')).toBe(
+      '3 days of the last 10',
+    ) //and numbers of your own are only text
+
+    //how long ago something happened is one tick subtracted from another, so keep times as ticks and say the span at the very end
+    let landed = 1344230277300 //the Curiosity landing
+    let later = landed + 3 * Time.day + 4 * Time.hour
+    expect(sayDuration(later - landed, 'landed # days ago')).toBe(
+      'landed 3 days ago',
+    )
+
+    //subtract the other way, and a negative span says its size with a minus sign in front
+    expect(sayDuration(landed - later, '# days # hours')).toBe(
+      '-3 days 4 hours',
+    )
+    expect(sayDuration(-30 * Time.second, '# minutes')).toBe('0 minutes') //unless what it says is zero
+  })
+  test('pitfalls of sayDuration, and what to write instead', () => {
+    //a year is Time.year, 365 and a quarter days, and a month is a twelfth of that, so a calendar year of 365 days falls a quarter day short
+    expect(sayDuration(365 * Time.day, '# years, # months, # days')).toBe(
+      '11 months, 30 days',
+    )
+    expect(sayDuration(30 * Time.day, '# months, # days')).toBe('30 days') //and 30 days is a little short of a month
+    expect(sayDuration(Time.year, '# years, # months, # days')).toBe(
+      '1 year, 0 months, 0 days',
+    ) //while a span built from Time comes out round
+
+    //write the plural; a singular word in the template is a short tag and some letters, so it never changes
+    expect(sayDuration(5 * Time.day, '# day')).toBe('5 day') //d, and then "ay"
+
+    //on its own, a bare m is minutes, so say months alone with mo
+    expect(sayDuration(3 * Time.month, '#m')).toBe('131490m')
+    expect(sayDuration(3 * Time.month, '#mo')).toBe('3mo')
+
+    //a # right before a unit's letter is a tag, so keep hashtags out of the template
+    expect(sayDuration(5 * Time.hour, 'posted # hours ago #hiring')).toBe(
+      'posted 5 hours ago 5hiring',
+    ) //#h, and then "iring"
+
+    //each # after the point is a digit always written, the way Excel writes 0.000, not the way it writes #.###
+    expect(sayDuration(1500, '#.### seconds')).toBe('1.500 seconds')
+
+    //a fraction only says seconds; before any other unit it's text, written as it is
+    expect(sayDuration(5 * Time.minute, '#.## minutes')).toBe('#.## minutes')
+
+    //list units from largest to smallest; out of order, each still gets its share, and each is written where it sits
+    expect(
+      sayDuration(2 * Time.hour + 5 * Time.minute, '# minutes # hours'),
+    ).toBe('5 minutes 2 hours')
+
+    //the smallest unit always shows, so where a trailing zero would read oddly, choose the template by the span's size, the way sayTimeRemaining does
+    expect(sayDuration(27 * Time.hour, '# days # hr # min')).toBe(
+      '1 day 3 hr 0 min',
+    ) //a map would say "1 day 3 hr", from "# days # hr" for a trip of a day or more
+
+    //the minus sign of a negative span goes in front of everything, words included, so choose the template by the sign
+    expect(sayDuration(-3 * Time.hour, 'about # hours ago')).toBe(
+      '-about 3 hours ago',
+    ) //for a time still to come, write "in # hours" and say -span
+  })
+  test('says the edges of a span, and refuses what is not one', () => {
+    expect(sayDuration(59 * Time.second, '# minutes')).toBe('0 minutes') //less than the smallest unit
+    expect(sayDuration(1000, '#.# seconds')).toBe('1.0 seconds') //only an exact 1 is singular
+    expect(sayDuration(Number.MAX_SAFE_INTEGER, '# years')).toBe('285420 years') //the largest span, at the integer ceiling
+    expect(sayDuration(5 * Time.minute, 'nothing here')).toBe('nothing here') //no tags, so the template as it is
+    expect(sayDuration(5 * Time.minute, '')).toBe('')
+    expect(sayDuration(-5, 'just now')).toBe('just now') //and no tags means no sign, either
+    expect(sayDuration(Number.MIN_SAFE_INTEGER, '# years')).toBe(
+      '-285420 years',
+    ) //and the largest negative one
+    expect(sayDuration(-0, '# seconds')).toBe('0 seconds') //negative zero is zero, with no sign
+    expect(() => sayDuration(1.5, '# seconds')).toThrow() //not whole
+    expect(() =>
+      sayDuration(Number.MAX_SAFE_INTEGER + 1, '# seconds'),
+    ).toThrow() //past the ceiling
+    expect(() => sayDuration('5', '# seconds')).toThrow() //not a number
+    expect(() => sayDuration(0, 7)).toThrow() //not a template
+  })
+  test('demonstration of three shortcuts that choose their own template: time remaining, coarse, and race', () => {
+    //sayTimeRemaining says one or two units, whichever matter at the span's size: two while the larger is a single digit, then one
+    let remaining = [
+      45 * Time.second,
+      Time.minute,
+      9 * Time.minute + 59 * Time.second,
+      10 * Time.minute,
+      Time.hour + 30 * Time.minute,
+      10 * Time.hour,
+      3 * Time.day - 1,
+      3 * Time.day,
+    ].map(sayTimeRemaining)
+    expect(remaining).toEqual([
+      '45s',
+      '1m 0s', //the seconds are its precision here, so they show at zero
+      '9m 59s',
+      '10m', //ten minutes and up drops the seconds
+      '1h 30m',
+      '10h',
+      '71h', //hours up to 71, plainer than "2d 23h" for something that finishes this week
+      '3d',
+    ])
+    expect(sayTimeRemaining(-90 * Time.second)).toBe('-1m 30s') //overdue, with a minus sign in front
+
+    //sayTimeRemainingCoarse rounds the seconds down to a multiple of 5, so a countdown on a page steps rather than flickers
+    expect(sayTimeRemainingCoarse(37 * Time.second)).toBe('35s')
+    expect(sayTimeRemainingCoarse(97 * Time.second)).toBe('1m 35s')
+    expect(
+      [5, 4, 3, 2, 1, 0].map((n) => sayTimeRemainingCoarse(n * Time.second)),
+    ).toEqual(['5s', '4s', '3s', '2s', '1s', '0s']) //but the last five seconds count down one at a time
+
+    //sayTimeRace says how long something took to the millisecond, the way a race is timed
+    expect(sayTimeRace(5 * Time.minute + 15 * Time.second + 223)).toBe(
+      `5'15"223`,
+    )
+    expect(sayTimeRace(7)).toBe(`0'00"007`) //seconds and milliseconds padded, so every time reads the same way
+    expect(sayTimeRace(75 * Time.minute)).toBe(`75'00"000`) //the minutes take everything above them
+    expect(sayTimeRace(-1234)).toBe(`-0'01"234`) //a negative span, like a split behind the leader
+
+    //each refuses a span that isn't a whole number of milliseconds within the integer ceiling, as sayDuration does
+    expect(() => sayTimeRemaining(1.5)).toThrow()
+    expect(() => sayTimeRemainingCoarse('5')).toThrow()
+    expect(() => sayTimeRace(Number.MAX_SAFE_INTEGER + 1)).toThrow()
+  })
+  test('sayDuration knows every unit word, singular and plural, and where a bare m sits', () => {
+    //every word a tag can end with, said at 1 and at 2: whole words and short plurals turn singular at 1, while the short singulars and single letters never change
+    let words = [
+      ['years', Time.year, '1 year', '2 years'],
+      ['yrs', Time.year, '1 yr', '2 yrs'],
+      ['yr', Time.year, '1 yr', '2 yr'],
+      ['y', Time.year, '1 y', '2 y'],
+      ['months', Time.month, '1 month', '2 months'],
+      ['mos', Time.month, '1 mo', '2 mos'],
+      ['mo', Time.month, '1 mo', '2 mo'],
+      ['weeks', Time.week, '1 week', '2 weeks'],
+      ['wks', Time.week, '1 wk', '2 wks'],
+      ['w', Time.week, '1 w', '2 w'],
+      ['days', Time.day, '1 day', '2 days'],
+      ['d', Time.day, '1 d', '2 d'],
+      ['hours', Time.hour, '1 hour', '2 hours'],
+      ['hrs', Time.hour, '1 hr', '2 hrs'],
+      ['hr', Time.hour, '1 hr', '2 hr'],
+      ['h', Time.hour, '1 h', '2 h'],
+      ['minutes', Time.minute, '1 minute', '2 minutes'],
+      ['mins', Time.minute, '1 min', '2 mins'],
+      ['min', Time.minute, '1 min', '2 min'],
+      ['m', Time.minute, '1 m', '2 m'],
+      ['seconds', Time.second, '1 second', '2 seconds'],
+      ['secs', Time.second, '1 sec', '2 secs'],
+      ['sec', Time.second, '1 sec', '2 sec'],
+      ['s', Time.second, '1 s', '2 s'],
+    ]
+    for (let [word, size, one, two] of words) {
+      expect(sayDuration(size, '# ' + word), word).toBe(one)
+      expect(sayDuration(2 * size, '# ' + word), word).toBe(two)
+    }
+
+    //a bare m is minutes, unless it sits right after years or right before weeks, days, or hours, where only months fit
+    let span =
+      Time.year +
+      2 * Time.month +
+      3 * Time.day +
+      4 * Time.hour +
+      5 * Time.minute +
+      6 * Time.second
+    expect(sayDuration(span, '#y #m')).toBe('1y 2m') //after years, months
+    expect(sayDuration(span, '#m #d')).toBe('14m 3d') //before days, months, which take the year in too
+    expect(sayDuration(span, '#m #w')).toBe('14m 0w') //before weeks, months
+    expect(sayDuration(span, '#h #m')).toBe('10303h 5m') //after hours, minutes
+    expect(sayDuration(span, '#m #s')).toBe('618185m 6s') //before seconds, minutes
+    expect(sayDuration(span, '#m')).toBe('618185m') //on its own, minutes, the way a feed says them
+    expect(sayDuration(span, '#mo #m')).toBe('14mo 4565m') //after months spelled mo, minutes, which take in the days and hours between
+    expect(sayDuration(span, '#y #m #s')).toBe('1y 2m 273906s') //after years, months, even with seconds next; the rule reads only its neighbors
+
+    //the spaces between # and its unit are kept as written, and there can be none; a tab isn't one, so it leaves the # as text
+    let both = 2 * Time.hour + 5 * Time.minute
+    expect(sayDuration(both, '#   hours')).toBe('2   hours')
+    expect(sayDuration(both, '#hours')).toBe('2hours')
+    expect(sayDuration(both, '#\thours')).toBe('#\thours')
+    expect(sayDuration(both, '#h#m')).toBe('2h5m') //tags right against each other still cut apart
+    expect(sayDuration(both, '##h')).toBe('#2h') //a # with no unit after it is only a #
+  })
+  test('the three shortcuts at every boundary', () => {
+    //sayTimeRemaining changes its template at each of these, a millisecond before and at the line
+    expect(
+      [
+        Time.minute - 1,
+        Time.minute,
+        10 * Time.minute - 1,
+        10 * Time.minute,
+        Time.hour - 1,
+        Time.hour,
+        10 * Time.hour - 1,
+        10 * Time.hour,
+        3 * Time.day - 1,
+        3 * Time.day,
+      ].map(sayTimeRemaining),
+    ).toEqual([
+      '59s',
+      '1m 0s',
+      '9m 59s',
+      '10m',
+      '59m',
+      '1h 0m',
+      '9h 59m',
+      '10h',
+      '71h',
+      '3d',
+    ])
+
+    //sayTimeRemainingCoarse steps by five seconds above five seconds, and one at a time below
+    expect(
+      [4999, 5000, 5999, 9999, 10000, 59999, 60000, 64999, 65000].map(
+        sayTimeRemainingCoarse,
+      ),
+    ).toEqual(['4s', '5s', '5s', '5s', '10s', '55s', '1m 0s', '1m 0s', '1m 5s'])
+
+    //sayTimeRace carries each place into the next, and the minutes never wrap into hours
+    expect([999, 1000, 59999, 60000, Time.hour].map(sayTimeRace)).toEqual([
+      `0'00"999`,
+      `0'01"000`,
+      `0'59"999`,
+      `1'00"000`,
+      `60'00"000`,
+    ])
+  })
 })
 
 //  _   _      _
@@ -116,6 +430,198 @@ describe('tick', () => {
     expect(iso).toBe('2012-08-06T05:17:57.300Z')
     expect(same).toBe(true)
     expect(asked).toBe(false)
+  })
+  test('demonstration of saying a tick in any shape, for a page, a person, or a log', () => {
+    let t = 1344230277300 //the Curiosity landing again: Monday, August 6, 2012, at 5:17:57.300 in the morning, utc
+
+    //uppercase tags are the calendar, lowercase tags are the clock, and everything else is written as it is
+    expect(sayTick(t, 'YYYY-MM-DD')).toBe('2012-08-06')
+    expect(sayTick(t, 'hh24:mm:ss')).toBe('05:17:57')
+
+    //the iso form, built from tags; T and Z aren't tags, so they pass through, and ttt is the milliseconds
+    expect(sayTick(t, 'YYYY-MM-DDThh24:mm:ss.tttZ')).toBe(
+      '2012-08-06T05:17:57.300Z',
+    )
+    expect(sayTick(t, 'YYYY-MM-DDThh24:mm:ss.tttZ')).toBe(tickToIso(t)) //the same text tickToIso writes, though only tickToIso's comes with a reader
+
+    //for a blog or a page, with names in the case of their tags
+    expect(sayTick(t, 'Dddd, Mmmm D, YYYY')).toBe('Monday, August 6, 2012')
+    expect(sayTick(t, 'Mmm D, YYYY')).toBe('Aug 6, 2012')
+    expect(sayTick(t, 'Ddd Mmm D')).toBe('Mon Aug 6')
+    expect(sayTick(t, 'DDD MMM D')).toBe('MON AUG 6') //all capitals, for a heading or a stamp
+    expect(sayTick(t, 'ddd mmm D')).toBe('mon aug 6') //and all lowercase, the way the short form writes its months
+
+    //the twelve-hour clock, with am and pm in four forms; pairing them with h12 or hh12 is up to the template
+    expect(sayTick(t, 'h12:mm AA')).toBe('5:17 AM')
+    expect(sayTick(t, 'hh12:mm aa')).toBe('05:17 am')
+    expect(sayTick(t, 'h12:mmA')).toBe('5:17A')
+    expect(sayTick(t, 'h12:mma')).toBe('5:17a')
+
+    //for a log file, every field padded so the lines align and sort as text, with the fraction as fine as you need
+    expect(sayTick(t, 'YYYY-MM-DD hh24:mm:ss.ttt')).toBe(
+      '2012-08-06 05:17:57.300',
+    )
+    expect(sayTick(t, 'YYYY-MM-DD hh24:mm:ss.t')).toBe('2012-08-06 05:17:57.3') //t, tt, and ttt are tenths, hundredths, and thousandths, rounded down
+    expect(sayTick(t, 'YYYYMMDD-hh24mmss')).toBe('20120806-051757') //a file name that sorts, with no colons for the file systems that refuse them
+
+    //numbers in the order different places write a date; the tags neither know nor care whose order it is
+    expect(sayTick(t, 'M/D/YYYY')).toBe('8/6/2012')
+    expect(sayTick(t, 'DD.MM.YYYY')).toBe('06.08.2012')
+
+    //sayTick writes the tick's fields as they fall in utc, so for the clock on someone's wall, shift the tick by their offset first
+    let pacific = t - 7 * Time.hour //pacific daylight time is seven hours behind utc; t - new Date(t).getTimezoneOffset() * Time.minute shifts to this machine's own
+    expect(sayTick(pacific, 'Dddd, Mmmm D, h12:mm AA')).toBe(
+      'Sunday, August 5, 10:17 PM',
+    ) //back across midnight, to the evening before
+
+    //the template is read once, left to right, taking the longest tag at each position
+    expect(sayTick(t, 'YYYYY')).toBe('2012Y') //YYYY, and then a Y that isn't a tag
+    expect(sayTick(t, 'MMMMM')).toBe('AUGUST8') //MMMM, and then M
+    expect(sayTick(t, 'h12:m')).toBe('5:m') //the minute is mm and always two digits, so a lone m is only a letter; five past is :05, never :5
+    expect(sayTick(t, 'h12:mm a.m.')).toBe('5:17 a.m.') //which lets a.m. and p.m. keep their periods, the way the associated press writes them
+    expect(sayTick(t, 'MMM')).toBe('AUG') //and a value is never read again, so the A in AUG stays a letter rather than becoming AM or PM
+
+    //keep words out of the template: say the date with a small one, and put what it writes into the text around it
+    expect(`Posted ${sayTick(t, 'Mmm D')} at ${sayTick(t, 'h12:mm AA')}`).toBe(
+      'Posted Aug 6 at 5:17 AM',
+    )
+    expect(sayTick(t, 'Posted Mmm D at h12:mm AA')).toBe(
+      'Pos3ed Aug 6 a3 5:17 AM',
+    ) //because written into the template, the t in "Posted" and the a and t in "at" are tags
+  })
+  test('says the edges of a day, a second, and the range', () => {
+    let midnight = Date.UTC(2026, 0, 1) //new year's day, 2026, a thursday
+    expect(sayTick(midnight, 'h12 AA')).toBe('12 AM') //midnight on a twelve-hour clock is 12, not 0
+    expect(sayTick(midnight, 'h24 hh24:mm')).toBe('0 00:00')
+    expect(sayTick(midnight + 12 * Time.hour, 'h12 AA, h24')).toBe('12 PM, 12') //and so is noon
+    expect(sayTick(midnight + 13 * Time.hour, 'h12 hh12 aa, h24')).toBe(
+      '1 01 pm, 13',
+    )
+    expect(sayTick(midnight, 'M/D MM/DD')).toBe('1/1 01/01') //a leading zero only where the tag asks for one
+    expect(sayTick(midnight + 7, 'ss.t ss.tt ss.ttt')).toBe('00.0 00.00 00.007')
+    expect(sayTick(midnight + 123, 'ss.t ss.tt ss.ttt')).toBe(
+      '00.1 00.12 00.123',
+    ) //123 milliseconds past the second, to each depth
+    expect(sayTick(midnight - 1, 'ss.t ss.tt ss.ttt')).toBe('59.9 59.99 59.999') //the last millisecond of 2025 rounds down, never up into the next second
+
+    //every month and every weekday, in each length
+    let months = []
+    for (let i = 0; i < 12; i++)
+      months.push(sayTick(Date.UTC(2026, i, 1), 'Mmm Mmmm'))
+    expect(months).toEqual([
+      'Jan January',
+      'Feb February',
+      'Mar March',
+      'Apr April',
+      'May May',
+      'Jun June',
+      'Jul July',
+      'Aug August',
+      'Sep September',
+      'Oct October',
+      'Nov November',
+      'Dec December',
+    ])
+    let days = []
+    for (let i = 0; i < 7; i++)
+      days.push(sayTick(Date.UTC(2026, 0, 4 + i), 'Ddd Dddd')) //january 4, 2026 is a sunday
+    expect(days).toEqual([
+      'Sun Sunday',
+      'Mon Monday',
+      'Tue Tuesday',
+      'Wed Wednesday',
+      'Thu Thursday',
+      'Fri Friday',
+      'Sat Saturday',
+    ])
+
+    //the names behind those words, whole and in title case, for a caller to clip and then upper or lower case their own way
+    expect(monthNames[7]).toBe('August')
+    expect(dayNames[0]).toBe('Sunday') //sunday first, the way getUTCDay counts
+    expect(monthNames[8].slice(0, 3).toLowerCase()).toBe('sep') //the first three letters are the short name, which the short form writes in lowercase
+    expect(Object.isFrozen(monthNames) && Object.isFrozen(dayNames)).toBe(true) //so a caller can't change them under sayTick and the short form
+
+    //the first and last ticks, and what sayTick refuses
+    expect(sayTick(0, 'Dddd, YYYY-MM-DD hh24:mm:ss.ttt')).toBe(
+      'Thursday, 1970-01-01 00:00:00.000',
+    )
+    expect(sayTick(253402300799999, 'Dddd, YYYY-MM-DD hh24:mm:ss.ttt')).toBe(
+      'Friday, 9999-12-31 23:59:59.999',
+    )
+    expect(sayTick(0, '')).toBe('') //a blank template says nothing
+    expect(() => sayTick(-1, 'YYYY')).toThrow() //not a tick
+    expect(() => sayTick(0, 7)).toThrow() //not a template
+  })
+  test('sayTick writes every tag, and cuts neighboring tags apart by the longest match', () => {
+    let t = Date.UTC(2026, 1, 3, 14, 5, 9, 87) //tuesday, february 3, 2026, at 2:05:09.087 in the afternoon, utc, where every number is short enough to show its padding
+    let every = {
+      YYYY: '2026',
+      MMMM: 'FEBRUARY',
+      Mmmm: 'February',
+      mmmm: 'february',
+      MMM: 'FEB',
+      Mmm: 'Feb',
+      mmm: 'feb',
+      MM: '02',
+      M: '2',
+      DDDD: 'TUESDAY',
+      Dddd: 'Tuesday',
+      dddd: 'tuesday',
+      DDD: 'TUE',
+      Ddd: 'Tue',
+      ddd: 'tue',
+      DD: '03',
+      D: '3',
+      hh12: '02',
+      hh24: '14',
+      h12: '2',
+      h24: '14',
+      mm: '05',
+      ss: '09',
+      ttt: '087',
+      tt: '08',
+      t: '0',
+      AA: 'PM',
+      aa: 'pm',
+      A: 'P',
+      a: 'p',
+    }
+    for (let [tag, said] of Object.entries(every))
+      expect(sayTick(t, tag), tag).toBe(said)
+
+    //tags written against each other are cut by the longest match at each position, and what's left is text
+    expect(sayTick(t, 'MMmm')).toBe('0205') //the month and then the minute
+    expect(sayTick(t, 'mmmmm')).toBe('februarym') //mmmm, and then an m that isn't a tag
+    expect(sayTick(t, 'DDd')).toBe('03d')
+    expect(sayTick(t, 'hhh24')).toBe('h14') //an h, and then hh24
+    expect(sayTick(t, 'h120')).toBe('20') //h12, and then a 0
+    expect(sayTick(t, 'tttt')).toBe('0870') //ttt, and then t
+    expect(sayTick(t, 'AAA')).toBe('PMP') //AA, and then A
+    expect(sayTick(t, 'ssss')).toBe('0909')
+    expect(sayTick(t, 'YYYY $& $1')).toBe('2026 $& $1') //a replacement pattern in a template is only text
+
+    //what sayTick refuses: anything that isn't a tick, and a template that isn't text
+    expect(() => sayTick(1.5, 'YYYY')).toThrow()
+    expect(() => sayTick('5', 'YYYY')).toThrow()
+    expect(() => sayTick(NaN, 'YYYY')).toThrow()
+    expect(() => sayTick(253402300800000, 'YYYY')).toThrow() //the first millisecond of 10000
+    expect(() => sayTick(t)).toThrow()
+  })
+  test('sayTick agrees with tickToIso on every tick the shared vectors pin', () => {
+    //the ticks the tick vectors write or read: unit boundaries, leap days, and both edges of the range
+    let ticks = new Set()
+    for (let c of vectors) {
+      if (c.throws) continue //a refusal's input isn't a tick
+      if (c.function == 'tickToIso' || c.function == 'tickToText')
+        ticks.add(c.input[0])
+      if (c.function == 'isoToTick' || c.function == 'textToTick')
+        ticks.add(c.output)
+    }
+    expect(ticks.has(0) && ticks.has(253402300799999)).toBe(true) //among them both edges of the range, so the check below reaches them
+    for (let t of ticks)
+      expect(sayTick(t, 'YYYY-MM-DDThh24:mm:ss.tttZ'), String(t)).toBe(
+        tickToIso(t),
+      ) //built from tags, the iso form comes out the same as the platform writes it
   })
 })
 
