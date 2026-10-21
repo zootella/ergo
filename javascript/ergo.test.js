@@ -725,7 +725,7 @@ describe('editions', () => {
 //fuzz tests draw random inputs as fast as the workstation allows for a set number of seconds, so they stay out of the deterministic suite above; set ERGO_FUZZ to a number of seconds to run them, like ERGO_FUZZ=4 pnpm fuzz, which also shows the counts they reached
 const fuzzSeconds = Number(process.env.ERGO_FUZZ) || 0
 
-//centers and radii from cold3: a broad sweep of decades, leap day, each unit boundary at a narrow and then a wide aperture, and the two edges of the range
+//centers and radii from the tick's original fuzz test: a broad sweep of decades, leap day, each unit boundary at a narrow and then a wide aperture, and the two edges of the range
 const fuzzCenters = [
   ['2005', 30 * Time.year],
   ['2000feb29', 3 * Time.day],
@@ -997,7 +997,7 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
               size: between(10, 20),
             },
             tips: { title: 'Test.Tips.SHA256.5-15B.', size: between(5, 15) },
-          } //icarus's fuzz: small files and tiny block sizes, so every case crosses many pieces and stripes
+          } //small files and tiny block sizes, the way the original, the JavaScript ergo grew from, fuzzes them, so every case crosses many pieces and stripes
           let data = Data({ random: between(1, 500) })
           let file = { base16: data.base16() }
           let pieces = randomPieces(data).map((p) => ({ base16: p.base16() }))
@@ -1032,7 +1032,7 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
         let stop = Date.now() + fuzzSeconds * Time.second
         let cycles = 0
         while (Date.now() < stop) {
-          let size = 1 + Math.floor(Math.random() * 20 * Size.mb) //icarus's realistic files, up to 20 MiB, across several 4 MiB pieces
+          let size = 1 + Math.floor(Math.random() * 20 * Size.mb) //realistic files, as the original tests them, up to 20 MiB, across several 4 MiB pieces
           let unit = Data({ random: 1 + Math.floor(Math.random() * 5000) })
           let file = { repeat: unit.base16(), length: size } //random bytes repeated to the size, so each edition makes the file from a line of json rather than 40 MB of base16
           let a = new Uint8Array(size)
@@ -1064,7 +1064,7 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
     )
 
     test(
-      "icarus's realistic files, with the real protocol, hash to icarus's answers in every edition",
+      'the original realistic files, with the real protocol, hash to the original answers in every edition',
       async () => {
         let b16 = (s) => ({ base16: Data({ base32: s }).base16() })
         for (let [tip, piece, seed, size] of [
@@ -1094,7 +1094,7 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
             }) //and all of it in one update, more than a piece at once
           }
         }
-        //icarus's 19.7 MB and 28 MB files can't be pinned this way: its mulberry seed grows past the integers a double holds exactly at about 19.7 MB, so no generator that wraps at 32 bits can make their last bytes
+        //the original 19.7 MB and 28 MB files can't be pinned this way: their mulberry seed grows past the integers a double holds exactly at about 19.7 MB, so no generator that wraps at 32 bits can make their last bytes
       },
       (fuzzSeconds + 120) * Time.second,
     )

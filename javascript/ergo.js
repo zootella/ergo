@@ -218,7 +218,7 @@ function _checkTemplate(template) {
 }
 
 /*
-Three shortcuts sit on top of sayDuration, each with its template chosen for one use, in place of a template from the caller. They come from node, ergo's ancestor from 2013, which said time these three ways, and here each is a few lines of ergo.
+Three shortcuts sit on top of sayDuration, each with its template chosen for one use, in place of a template from the caller. They come from ergo's ancestor from 2013, which said time these three ways, and here each is a few lines of ergo.
 
 sayTimeRemaining says how long until something finishes, or how long it has run, in the units that matter at its size: two units while the larger is a single digit, like "9m 59s" and "1h 0m", and one unit after, like "10m" and "10h". It stays in hours up to 71 before it turns to days, since "71h" is plainer than "2d 23h" for something that finishes this week. sayTimeRemainingCoarse says the same, with the seconds rounded down to a multiple of 5, so a countdown on a page steps rather than flickers; the last five seconds still count down one at a time.
 
@@ -705,7 +705,7 @@ function _base64ToArray(s) {
 // |_.__/ \__,_|___/\___|____/_____|
 //
 
-//base32, for hash values in the database, so they can be short, but also always the same length
+//base32, for hash values in a database, so they can be short, but also always the same length
 const base32Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
 let _base32Decoder //lookup table for decoding, made once on first use
 function _arrayToBase32(a) {
@@ -915,7 +915,7 @@ export async function blake3(data) {
   return Data({ array: nobleBlake3(_checkData(data).array()) })
 }
 
-//the SHA-256 hash of text, as base32, the shortcut for the common case; text to Data, hashed, and out as the form icarus keeps hash values in
+//the SHA-256 hash of text, as base32, the shortcut for the common case; text to Data, hashed, and out in the form a database keeps hash values in
 export async function hashText(s) {
   return (await sha256(Data({ text: s }))).base32()
 }
@@ -950,7 +950,7 @@ function _hasher(h) {
 //
 
 /*
-The fuji hashes are two of ergo's own, from icarus, and both are SHA-256 over a summary of a file rather than over the file itself. The piece hash covers every byte: it cuts the file into 4 MiB pieces, hashes each one, and hashes the list of those hashes. The tip hash covers almost none of them: it hashes the file's first 4 KiB, 4 KiB from its middle, and its last two, at most 16 KiB however large the file, so it's done in a few reads and finds likely copies of a file across millions of others for the cost of those few reads each. A file of 16 KiB or less is its own tip. Each summary starts with a title that names the protocol and the file's size, like "Fuji.Tips.SHA256.4KiB.5.", so two files of different sizes never share a hash, even with identical tips.
+The fuji hashes are two of ergo's own, from the original, the JavaScript ergo grew from, and both are SHA-256 over a summary of a file rather than over the file itself. The piece hash covers every byte: it cuts the file into 4 MiB pieces, hashes each one, and hashes the list of those hashes. The tip hash covers almost none of them: it hashes the file's first 4 KiB, 4 KiB from its middle, and its last two, at most 16 KiB however large the file, so it's done in a few reads and finds likely copies of a file across millions of others for the cost of those few reads each. A file of 16 KiB or less is its own tip. Each summary starts with a title that names the protocol and the file's size, like "Fuji.Tips.SHA256.4KiB.5.", so two files of different sizes never share a hash, even with identical tips.
 
 The pieces are there by design. Web Crypto hashes only all at once, so a page can't hash a whole large file through it without holding all of it in memory; hashing 4 MiB pieces and then the list of them lets a page hash a file of any size at Web Crypto's full native speed, a piece at a time. And the tip hash can come two ways that must agree: from a File, by slicing out just the stripes, or from a stream, by noticing the stripes as they pass on the way to the piece hash.
 */
@@ -1007,7 +1007,7 @@ export function hashStripeOverlap(foreground, background) {
   for (let [c, d] of background) {
     if (a < d && b > c) overlaps.push([Math.max(a, c), Math.min(b, d)]) //there's an overlap!
   }
-  return overlaps //none at all is an empty list, where icarus answered null; one type loops the same either way
+  return overlaps //none at all is an empty list, where the original answered null; one type loops the same either way
 }
 
 //  _               _        __ _ _                        _       _

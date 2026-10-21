@@ -294,7 +294,7 @@ pub fn say_duration(span: i64, template: &str) -> String {
     text
 }
 
-// Three shortcuts sit on top of say_duration, each with its template chosen for one use, in place of a template from the caller. They come from node, ergo's ancestor from 2013, which said time these three ways, and here each is a few lines of ergo.
+// Three shortcuts sit on top of say_duration, each with its template chosen for one use, in place of a template from the caller. They come from ergo's ancestor from 2013, which said time these three ways, and here each is a few lines of ergo.
 //
 // say_time_remaining says how long until something finishes, or how long it has run, in the units that matter at its size: two units while the larger is a single digit, like "9m 59s" and "1h 0m", and one unit after, like "10m" and "10h". It stays in hours up to 71 before it turns to days, since "71h" is plainer than "2d 23h" for something that finishes this week. say_time_remaining_coarse says the same, with the seconds rounded down to a multiple of 5, so a countdown on a page steps rather than flickers; the last five seconds still count down one at a time.
 //
@@ -1132,7 +1132,7 @@ fn base64_to_bytes(s: &str) -> Result<Vec<u8>, DataError> {
     round_trip("base64", s, a, bytes_to_base64)
 }
 
-// base32, for hash values in the database, so they can be short, but also always the same length
+// base32, for hash values in a database, so they can be short, but also always the same length
 
 /// The base32 alphabet, uppercase letters and 2 through 7.
 const BASE32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -1355,7 +1355,7 @@ pub fn blake3(data: &Data) -> Data {
     Data::from_array(blake3::hash(data.array()).as_bytes())
 }
 
-/// The SHA-256 hash of text, as base32, the shortcut for the common case: text to Data, hashed, and out as the form icarus keeps hash values in.
+/// The SHA-256 hash of text, as base32, the shortcut for the common case: text to Data, hashed, and out in the form a database keeps hash values in.
 ///
 /// ```
 /// assert_eq!(zootella_ergo::hash_text("hello"), "FTZE3OS7WCRQ4JXIHMVMLOPCTYNRMHS4D6TUEXTTAQZWFE4LTASA");
@@ -1461,7 +1461,7 @@ impl std::io::Write for Blake3 {
 
 // hash measure
 
-// The fuji hashes are two of ergo's own, from icarus, and both are SHA-256 over a summary of a file rather than over the file itself. The piece hash covers every byte: it cuts the file into 4 MiB pieces, hashes each one, and hashes the list of those hashes. The tip hash covers almost none of them: it hashes the file's first 4 KiB, 4 KiB from its middle, and its last two, at most 16 KiB however large the file, so it's done in a few reads and finds likely copies of a file across millions of others for the cost of those few reads each. A file of 16 KiB or less is its own tip. Each summary starts with a title that names the protocol and the file's size, like "Fuji.Tips.SHA256.4KiB.5.", so two files of different sizes never share a hash, even with identical tips.
+// The fuji hashes are two of ergo's own, from the original, the JavaScript ergo grew from, and both are SHA-256 over a summary of a file rather than over the file itself. The piece hash covers every byte: it cuts the file into 4 MiB pieces, hashes each one, and hashes the list of those hashes. The tip hash covers almost none of them: it hashes the file's first 4 KiB, 4 KiB from its middle, and its last two, at most 16 KiB however large the file, so it's done in a few reads and finds likely copies of a file across millions of others for the cost of those few reads each. A file of 16 KiB or less is its own tip. Each summary starts with a title that names the protocol and the file's size, like "Fuji.Tips.SHA256.4KiB.5.", so two files of different sizes never share a hash, even with identical tips.
 //
 // The pieces are there by design, for JavaScript, whose Web Crypto hashes only all at once: hashing 4 MiB pieces and then the list of them lets a page hash a file of any size at Web Crypto's full speed. Here each piece fills a vector of its own, which moves into its Data without a copy, where JavaScript slides a conveyor belt. The tip hash can come two ways that must agree: from a file, by seeking to just the stripes, or from a stream, by noticing the stripes as they pass on the way to the piece hash.
 

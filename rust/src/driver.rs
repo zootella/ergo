@@ -304,7 +304,7 @@ impl std::io::Read for Boxes {
     }
 }
 
-/// {"mulberry": seed, "length": n} is n bytes from icarus's Mulberry32 generator at that seed, wrapping at 32 bits as every edition must, so a vector can name a realistic file of any size in a line; Mulberry32 is a well-known small PRNG by Tommy Ettinger from 2018.
+/// {"mulberry": seed, "length": n} is n bytes from the Mulberry32 generator at that seed, wrapping at 32 bits as every edition must, so a vector can name a realistic file of any size in a line, the way the original, the JavaScript ergo grew from, makes its test files; Mulberry32 is a well-known small PRNG by Tommy Ettinger from 2018.
 fn mulberry_data(seed: u32, length: usize) -> crate::Data {
     let mut s = seed;
     let mut a = vec![0u8; length];

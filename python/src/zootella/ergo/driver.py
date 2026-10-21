@@ -171,7 +171,7 @@ def _fed_fuji(h: FujiHasher, pieces: list[Data]) -> dict:
 
 
 def _mulberry_data(seed: int, length: int) -> Data:
-    """{"mulberry": seed, "length": n} is n bytes from icarus's Mulberry32 generator at that seed, wrapping at 32 bits as every edition must, so a vector can name a realistic file of any size in a line; Mulberry32 is a well-known small PRNG by Tommy Ettinger from 2018."""
+    """{"mulberry": seed, "length": n} is n bytes from the Mulberry32 generator at that seed, wrapping at 32 bits as every edition must, so a vector can name a realistic file of any size in a line, the way the original, the JavaScript ergo grew from, makes its test files; Mulberry32 is a well-known small PRNG by Tommy Ettinger from 2018."""
     s = seed & 0xFFFFFFFF
     a = bytearray(length)
     v = 0

@@ -17,7 +17,7 @@ fn fuzz_seconds() -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Centers and radii from cold3: a broad sweep of decades, leap day, each unit boundary at a narrow and then a wide aperture, and the two edges of the range.
+/// Centers and radii from the tick's original fuzz test: a broad sweep of decades, leap day, each unit boundary at a narrow and then a wide aperture, and the two edges of the range.
 const CENTERS: [(&str, i64); 14] = [
     ("2005", 30 * time::YEAR),
     ("2000feb29", 3 * time::DAY),

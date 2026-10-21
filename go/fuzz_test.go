@@ -24,7 +24,7 @@ func fuzzSeconds(t *testing.T) float64 {
 // TestFuzzTick runs random ticks through both text forms and SayTick, as fast as this edition can, for the number of seconds ERGO_FUZZ names.
 func TestFuzzTick(t *testing.T) {
 	seconds := fuzzSeconds(t)
-	// centers and radii from cold3: a broad sweep of decades, leap day, each unit boundary at a narrow and then a wide aperture, and the two edges of the range
+	// centers and radii from the tick's original fuzz test: a broad sweep of decades, leap day, each unit boundary at a narrow and then a wide aperture, and the two edges of the range
 	centers := []struct {
 		text   string
 		radius int64

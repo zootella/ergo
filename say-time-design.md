@@ -36,7 +36,7 @@ Since case is spent, the hour can't use it to say which clock it means, the way 
 
 ### The minute and second are always two digits
 
-The minute is `mm` and the second is `ss`, always two digits, and there's no tag for one digit. Five past one is 1:05, and 1:5 is never what anyone wants. The first draft had `m` and `s` for these, and changing them to `mm` and `ss` paid three times. `mm` is what every other system's habit types, so the trap where `mm` wrote the minute twice, `05:1717`, disappeared. A lone `m` or `s` became just a letter, so `a.m.` and `p.m.` keep their periods, the way the Associated Press writes them. And icarus's own log format became expressible, below.
+The minute is `mm` and the second is `ss`, always two digits, and there's no tag for one digit. Five past one is 1:05, and 1:5 is never what anyone wants. The first draft had `m` and `s` for these, and changing them to `mm` and `ss` paid three times. `mm` is what every other system's habit types, so the trap where `mm` wrote the minute twice, `05:1717`, disappeared. A lone `m` or `s` became just a letter, so `a.m.` and `p.m.` keep their periods, the way the Associated Press writes them. And the log format of the original, the JavaScript ergo grew from, became expressible, below.
 
 The fraction of a second is `t`, `tt`, and `ttt`, as many digits as letters, rounded down. Rounding down is the only correct choice for a clock: rounding up would turn 59.999 into 60.
 
@@ -58,9 +58,9 @@ A template is read once, left to right, taking the longest tag at each position,
 
 There's no escaping, on purpose. Anything that isn't a tag is written as it is, so `YYYYY` writes the year and a Y. Words don't belong in a template, since `M`, `D`, `t`, `A`, and `a` are tags, and so are `mm` and `ss`. Say the date with a small template, and put the result into the sentence, page, or log line around it, using the language's own strings. The language is the escape character.
 
-### The name, and icarus
+### The name, and the original
 
-icarus already has a `sayTick`, in level0.js, with one argument and a fixed log format, like `Fri04:09p39.470s`, and cold3 calls it in thirteen places. ergo took the name anyway. The general function deserves it, and icarus's format is one template of the general one: `Dddhh12:mmass.ttts`, after shifting by the local offset. The trailing s is a letter only because the second became `ss`. When cold3 moves to ergo, each of those thirteen calls becomes a template or a one-line wrapper.
+The original already has a `sayTick`, in its guard layer, with one argument and a fixed log format, like `Fri04:09p39.470s`, and the application around it calls it in thirteen places. ergo took the name anyway. The general function deserves it, and the original's format is one template of the general one: `Dddhh12:mmass.ttts`, after shifting by the local offset. The trailing s is a letter only because the second became `ss`. When that application moves to ergo, each of those thirteen calls becomes a template or a one-line wrapper.
 
 ## sayDuration
 
@@ -98,7 +98,7 @@ The arithmetic is exact too. Rounding down by dividing could, in principle, roun
 
 Units that come out zero at the start drop away, along with the text after them, and from the first unit that isn't zero, everything stays. That lets one template count up a task of any length: `#d #h #m #.##s` says `32m 55.45s` half an hour in, never `0d 0h 32m 55.45s`. A zero between two others stays, so a day and a second is `1 day 0 hours 0 minutes 1 second`, never `1 day 1 second`, which reads like a slip. And the smallest unit a template names is the precision it asks for, so it always shows, even on an exact amount: `#m #s` says `1m 0s` for exactly a minute. If every unit is zero, the smallest says so, like `0 minutes`. A unit counts as zero by what's written, so `0.0 seconds` is zero. Text before the first tag and after the last one always stays, which is what lets `about # hours ago` work.
 
-This rule is the second draft. The first trimmed zeros at both ends, so `#m #s` said `1m` for exactly a minute, and `# hours and # minutes` said `2 hours`. Reading node's countdown, which kept `1m 0s` for a steady width, showed the better meaning: the start of a template says how large a span it's ready for, and its end says how precisely to say it. Trimming the end threw that second meaning away. Keeping it fixed two pitfalls along the way: `# days (# hours)` no longer loses its parenthesis to say `1 day)`, and a list built with "and" keeps it at the end. A list can still stumble at the start, since `# hours, # minutes, and # seconds` says `5 minutes, and 3 seconds` when the hours drop away.
+This rule is the second draft. The first trimmed zeros at both ends, so `#m #s` said `1m` for exactly a minute, and `# hours and # minutes` said `2 hours`. Reading the countdown in ergo's ancestor from 2013, which kept `1m 0s` for a steady width, showed the better meaning: the start of a template says how large a span it's ready for, and its end says how precisely to say it. Trimming the end threw that second meaning away. Keeping it fixed two pitfalls along the way: `# days (# hours)` no longer loses its parenthesis to say `1 day)`, and a list built with "and" keeps it at the end. A list can still stumble at the start, since `# hours, # minutes, and # seconds` says `5 minutes, and 3 seconds` when the hours drop away.
 
 The cost lands on templates that name more precision than a span needs. The full template, `# years, # months, # days, # hours, # minutes, #.### seconds`, now says `1 year, 0 months, 0 days, 0 hours, 0 minutes, 0.000 seconds` for a year. Where a trailing zero would read oddly, the template should be chosen by the span's size, which is exactly what `sayTimeRemaining` does, below.
 
@@ -116,17 +116,17 @@ This was a real tension. A rule that guesses from position is the kind of clever
 
 The first draft refused a negative span, which under ergo's rule would have needed a `has` of its own. The second let it through and put a minus sign in front of everything it wrote, which is simple and predictable. The third added one condition: the minus sign appears only in front of something that isn't zero, since `-0 minutes` reads as nonsense and `-just now` worse. The sign goes in front of words too, so `-about 3 hours ago` tells the caller to choose the template by the sign, like `in # hours` for a time still to come.
 
-### Three shortcuts, from node
+### Three shortcuts, from 2013
 
-Reading node, ergo's ancestor from 2013, turned up three ways of saying time that ergo now has. The first two are a few lines on top of `sayDuration`, so ergo is built from ergo, and the third writes its own three numbers.
+Reading ergo's ancestor from 2013 turned up three ways of saying time that ergo now has. The first two are a few lines on top of `sayDuration`, so ergo is built from ergo, and the third writes its own three numbers.
 
 `sayTimeRemaining` picks its own template by the span's size, by a rule of significant units: two units while the larger is a single digit, then one. It says `45s`, then `1m 0s` through `9m 59s`, `10m` through `59m`, `1h 0m` through `9h 59m`, `10h` through `71h`, and then `3d`. It stays in hours up to 71, because `71h` is plainer than `2d 23h` for something that finishes this week. A template can't do this on its own, since a template's precision is fixed; `sayTimeRemaining` decides how precise a duration should be at each size, which is the feed's ladder, made once.
 
-`sayTimeRemainingCoarse` rounds the seconds down to a multiple of 5, so a countdown on a page steps instead of flickering, and lets the last five seconds count down one at a time. The idea, and the reason, that a countdown shouldn't be distracting, are node's.
+`sayTimeRemainingCoarse` rounds the seconds down to a multiple of 5, so a countdown on a page steps instead of flickering, and lets the last five seconds count down one at a time. The idea, and the reason, that a countdown shouldn't be distracting, are that ancestor's.
 
 `sayTimeRace` writes `5'15"223`, minutes, seconds, and milliseconds with prime marks, the minutes taking everything above them. It's ergo's first answer to durations shaped like a clock. Its seconds and milliseconds are padded, which `sayDuration` never does, so it writes the three numbers itself. A first draft borrowed `sayTick` for the padding, reading the rest of the minute as a tick in the first minute of 1970. That was ergo built from ergo, but a span isn't a tick, and a page importing `sayTimeRace` carried `sayTick` and its name lists along. ergo uses ergo where it helps, not everywhere it could, and here a shorter call stack was plainer.
 
-Three of node's other ideas stayed behind on purpose: thousands separators in big counts, one-letter weekdays, which nobody agrees on, and `sayFraction`'s rates and percentages, like `#/s` and `#%`. That last one puts the idea of a tag as a pair to work on other quantities, and may come back someday.
+Three of its other ideas stayed behind on purpose: thousands separators in big counts, one-letter weekdays, which nobody agrees on, and `sayFraction`'s rates and percentages, like `#/s` and `#%`. That last one puts the idea of a tag as a pair to work on other quantities, and may come back someday.
 
 ### What throws, and what doesn't
 

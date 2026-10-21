@@ -466,7 +466,7 @@ The mistake was public and permanent before it was visible, so the mea culpa is 
 ergo has the first layer, the exact form, and two of them:
 
 - **The iso form** is `toISOString`'s: always 24 characters, always milliseconds, always Z. That avoids the variants RFC 3339 allows, a space, a lowercase t, a missing fraction. Its Z now says, under RFC 9557, exactly what a tick is: an instant, with no claim about anyone's local clock.
-- **The short form** is cold3's, like `2012aug6.0517.57300`, which reads back as exactly as the iso form does. It's also readable by a person, which is more than the machine forms in this history usually manage.
+- **The short form** came with ergo from the code it grew from, like `2012aug6.0517.57300`, which reads back as exactly as the iso form does. It's also readable by a person, which is more than the machine forms in this history usually manage.
 
 Both readers accept only what their writers produce. That's the strictness the third lesson above argues for, and the one RFC 3339's and HTTP's histories show is impossible to add later.
 

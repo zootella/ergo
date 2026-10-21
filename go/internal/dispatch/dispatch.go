@@ -359,7 +359,7 @@ func (b *boxes) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// mulberryData is {"mulberry": seed, "length": n}, n bytes from icarus's Mulberry32 generator at that seed, wrapping at 32 bits as every edition must, so a vector can name a realistic file of any size in a line; Mulberry32 is a well-known small PRNG by Tommy Ettinger from 2018
+// mulberryData is {"mulberry": seed, "length": n}, n bytes from the Mulberry32 generator at that seed, wrapping at 32 bits as every edition must, so a vector can name a realistic file of any size in a line, the way the original, the JavaScript ergo grew from, makes its test files; Mulberry32 is a well-known small PRNG by Tommy Ettinger from 2018
 func mulberryData(seed uint32, length int) ergo.Data {
 	s := seed
 	a := make([]byte, length)

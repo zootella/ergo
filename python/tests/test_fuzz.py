@@ -30,7 +30,7 @@ from zootella.ergo import (
 
 seconds = float(os.environ.get("ERGO_FUZZ", "0"))
 
-# centers and radii from cold3: a broad sweep of decades, leap day, each unit boundary at a narrow and then a wide aperture, and the two edges of the range
+# centers and radii from the tick's original fuzz test: a broad sweep of decades, leap day, each unit boundary at a narrow and then a wide aperture, and the two edges of the range
 centers = [
     ("2005", 30 * Time.YEAR),
     ("2000feb29", 3 * Time.DAY),

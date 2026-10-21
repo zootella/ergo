@@ -27,7 +27,7 @@ Then the thing that came out of the discussion. quad-style.md already traces two
 
 Nothing has to be decided now. The architecture makes a new edition a known cost, a dispatch table, a driver, a vector reader, a formatter in CI, a tab on the site, and nothing in the protocol ossifies against a fifth language. The bytes and handles design will be language-neutral regardless, so there's nothing to pre-build. And the pressure is in the rows, not the columns: the next functions, bytes, Bin, Outline, base62, and the crypto, will stress the protocol and all four editions far harder than a fifth language would. Each new row tests every column. Each new column re-tests the protocol with diminishing novelty.
 
-Starting with Ruby, implementing the JavaScript parts in Ruby first to evaluate them and spread the Ruby way to the others, would be a detour. The JavaScript edition is the reference by design and carries years of real use from core.js. Ruby first means translating idioms twice before reaching the editions that will run, and what it would mostly teach is how the Ruby edition should look.
+Starting with Ruby, implementing the JavaScript parts in Ruby first to evaluate them and spread the Ruby way to the others, would be a detour. The JavaScript edition is the reference by design and carries years of real use from the code ergo grew from. Ruby first means translating idioms twice before reaching the editions that will run, and what it would mostly teach is how the Ruby edition should look.
 
 ## Other languages
 

@@ -102,8 +102,8 @@ function toProtocol(v) {
   return v
 }
 
-//{mulberry: seed, length: n} is n bytes from icarus's Mulberry32 generator at that seed, random-looking but the same every time, so a vector can name a realistic file of any size in a line
-//Mulberry32 is a well-known small PRNG by Tommy Ettinger from 2018; this one wraps at 32 bits, as the other editions must, which matches icarus's for any file under about 19 MB, past which icarus's seed outgrows a double's exact integers
+//{mulberry: seed, length: n} is n bytes from the Mulberry32 generator at that seed, random-looking but the same every time, so a vector can name a realistic file of any size in a line, the way the original, the JavaScript ergo grew from, makes its test files
+//Mulberry32 is a well-known small PRNG by Tommy Ettinger from 2018; this one wraps at 32 bits, as the other editions must, which matches the original's for any file under about 19 MB, past which the original's seed outgrows a double's exact integers
 function mulberryData(seed, length) {
   let s = seed >>> 0
   function rng() {
