@@ -1,4 +1,4 @@
-"""The fuzz test: random ticks through both text forms, as fast as this edition can, for the number of seconds ERGO_FUZZ names.
+"""The fuzz test: random ticks through both text forms and say_tick, as fast as this edition can, for the number of seconds ERGO_FUZZ names.
 
 Skipped otherwise, so the suite stays deterministic and fast. Run with ERGO_FUZZ=4 uv run pytest -s -k fuzz, where -s shows the count it reached.
 """
@@ -19,6 +19,7 @@ from zootella.ergo import (
     blake3,
     has_tag,
     iso_to_tick,
+    say_tick,
     sha1,
     sha256,
     tag,
@@ -48,6 +49,8 @@ centers = [
 ]
 # the ceiling, so a tick drawn near an edge center stays a tick
 last_tick = text_to_tick("9999dec31.2359.59999")
+# a template that says every field of a tick, the weekday among them
+every_field = "Dddd YYYY-MM-DD hh12:mm:ss.ttt AA"
 
 
 @pytest.mark.skipif(seconds <= 0, reason="set ERGO_FUZZ to a number of seconds")
@@ -62,9 +65,11 @@ def test_fuzz_tick() -> None:
             t = min(max(c + random.randint(-radius, radius), 0), last_tick)
             assert text_to_tick(tick_to_text(t)) == t
             assert iso_to_tick(tick_to_iso(t)) == t
+            # and say it with every field, as the fuzz across the editions does, which is where what it says gets compared
+            say_tick(t, every_field)
             cycles += 1
     print(
-        f"\npython fuzzed {cycles} ticks through both text forms in {seconds:g} seconds, {round(cycles / seconds)} a second"
+        f"\npython fuzzed {cycles} ticks through both text forms and say_tick in {seconds:g} seconds, {round(cycles / seconds)} a second"
     )
 
 

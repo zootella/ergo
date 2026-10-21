@@ -21,7 +21,7 @@ func fuzzSeconds(t *testing.T) float64 {
 	return seconds
 }
 
-// TestFuzzTick runs random ticks through both text forms, as fast as this edition can, for the number of seconds ERGO_FUZZ names.
+// TestFuzzTick runs random ticks through both text forms and SayTick, as fast as this edition can, for the number of seconds ERGO_FUZZ names.
 func TestFuzzTick(t *testing.T) {
 	seconds := fuzzSeconds(t)
 	// centers and radii from cold3: a broad sweep of decades, leap day, each unit boundary at a narrow and then a wide aperture, and the two edges of the range
@@ -49,6 +49,7 @@ func TestFuzzTick(t *testing.T) {
 		t.Fatal(err)
 	}
 	budget := time.Duration(seconds / float64(len(centers)) * float64(time.Second)) // time to spend on each center
+	everyField := "Dddd YYYY-MM-DD hh12:mm:ss.ttt AA"                               // a template that says every field of a tick, the weekday among them
 	cycles := 0
 	for _, c := range centers {
 		center, err := ergo.TextToTick(c.text)
@@ -64,10 +65,11 @@ func TestFuzzTick(t *testing.T) {
 			if back, err := ergo.ISOToTick(ergo.TickToISO(tick)); err != nil || back != tick {
 				t.Fatalf("%d did not round-trip through the iso form: %d, %v", tick, back, err)
 			}
+			ergo.SayTick(tick, everyField) // and say it with every field, as the fuzz across the editions does, which is where what it says gets compared
 			cycles++
 		}
 	}
-	t.Logf("go fuzzed %d ticks through both text forms in %g seconds, %.0f a second", cycles, seconds, float64(cycles)/seconds)
+	t.Logf("go fuzzed %d ticks through both text forms and SayTick in %g seconds, %.0f a second", cycles, seconds, float64(cycles)/seconds)
 }
 
 // TestFuzzTag is a hot loop making tags: the smoke test that this edition makes them as fast as it can.

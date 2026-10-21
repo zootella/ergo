@@ -119,7 +119,7 @@ const durationUnits = {
   sec: 'second',
   s: 'second',
 }
-const durationTags = /#(\.#{1,3})?(\p{White_Space}*)([A-Za-z]*)/gu //a #, a fraction for seconds, any whitespace, and the run of english letters after them, where sayDuration looks for a unit's word; \p{White_Space} is unicode's own list, which \s misses by two characters
+const durationTags = /#(\.#{1,3})?(\p{White_Space}*)([A-Za-z]*)/gu //a #, a fraction for seconds, any whitespace, and the run of english letters after them, where sayDuration looks for a unit's word; \p{White_Space} is unicode's own list, while \s leaves out the next line control and counts the byte order mark
 
 //say a span of milliseconds in the units a template names, like "# hours # minutes" for "2 hours 5 minutes"; one way, with no reader
 export function sayDuration(span, template) {
@@ -133,7 +133,7 @@ export function sayDuration(span, template) {
   for (let match of template.matchAll(durationTags)) {
     let [all, fraction, whitespace, letters] = match
     let found = _durationWord(letters)
-    if (!found) continue //no unit's spelling starts the letters, so the # is only text
+    if (!found) continue //no unit's spelling starts the letters, so the # and any fraction it read are only text
     let { word, unit } = found
     if (fraction && unit != 'second') continue //a fraction only says seconds; before any other unit, the whole match stays text, so its last # can't make a tag of its own
     texts.push(template.slice(at, match.index))
@@ -629,9 +629,9 @@ function _checkClip(size, start, end) {
   ))
     throw new Error(`not a clip of ${size} bytes: ${start} to ${end}`)
 }
-//n is a count, zero or more, within the integer ceiling
+//n is a count, zero or more within the integer ceiling: hasInt(n) && n >= 0, the question a caller asks first
 function _checkCount(n) {
-  if (!(Number.isSafeInteger(n) && n >= 0)) throw new Error(`not a count: ${n}`)
+  if (!(hasInt(n) && n >= 0)) throw new Error(`not a count: ${n}`)
   return n
 }
 

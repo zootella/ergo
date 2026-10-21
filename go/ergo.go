@@ -148,7 +148,7 @@ func SayDuration(span int64, template string) string {
 		// m holds the start and end of the whole match, and then of each group: the fraction, the whitespace, and the letters
 		word, unit, ok := durationWord(template[m[6]:m[7]])
 		if !ok {
-			continue // no unit's spelling starts the letters, so the # is only text
+			continue // no unit's spelling starts the letters, so the # and any fraction it read are only text
 		}
 		digits := 0
 		if m[2] >= 0 {

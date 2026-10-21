@@ -280,7 +280,7 @@ def say_duration(span: float, template: str) -> str:
         fraction, whitespace, letters = match.groups()
         found = _duration_word(letters)
         if found is None:
-            continue  # no unit's spelling starts the letters, so the # is only text
+            continue  # no unit's spelling starts the letters, so the # and any fraction it read are only text
         word, unit = found
         if fraction and unit != Time.SECOND:
             continue  # a fraction only says seconds; before any other unit, the whole match stays text, so its last # can't make a tag of its own
@@ -892,7 +892,8 @@ def _check_data(d: object) -> Data:
 
 def _check_count(n: object) -> int:
     """A guard: pass a count through, zero or more within the integer ceiling, or raise; a bool is an int in python, and never a count."""
-    if not (isinstance(n, int) and not isinstance(n, bool) and 0 <= n <= 2**53 - 1):
+    # has_int(n) and n >= 0, the question a caller asks first, written out here since a call in python costs more than the question
+    if not (isinstance(n, int) and not isinstance(n, bool) and 0 <= n <= _int_ceiling):
         raise ValueError(f"not a count: {n!r}")
     return n
 

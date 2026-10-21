@@ -1,11 +1,11 @@
-//! The fuzz test: random ticks through both text forms, as fast as this edition can, for the number of seconds ERGO_FUZZ names.
+//! The fuzz test: random ticks through both text forms and say_tick, as fast as this edition can, for the number of seconds ERGO_FUZZ names.
 //!
 //! Skipped otherwise, so cargo test stays deterministic and fast. Run with ERGO_FUZZ=4 cargo test --release --test fuzz -- --nocapture, where --release measures the edition as it ships and --nocapture shows the count it reached.
 
 use std::hint::black_box;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use zootella_ergo::{
-    Blake3, Data, Sha1, Sha256, blake3, has_tag, iso_to_tick, sha1, sha256, size, tag,
+    Blake3, Data, Sha1, Sha256, blake3, has_tag, iso_to_tick, say_tick, sha1, sha256, size, tag,
     text_to_tick, tick_to_iso, tick_to_text, time,
 };
 
@@ -35,6 +35,9 @@ const CENTERS: [(&str, i64); 14] = [
     ("9999dec31", time::DAY),
 ];
 
+/// A template that says every field of a tick, the weekday among them.
+const EVERY_FIELD: &str = "Dddd YYYY-MM-DD hh12:mm:ss.ttt AA";
+
 #[test]
 fn fuzz_tick() {
     let seconds = fuzz_seconds();
@@ -59,11 +62,12 @@ fn fuzz_tick() {
             let t = (c + (x % (2 * radius as u64 + 1)) as i64 - radius).clamp(0, last); // a random tick within the radius, clamped to the range of ticks
             assert_eq!(text_to_tick(&tick_to_text(t)), Ok(t));
             assert_eq!(iso_to_tick(&tick_to_iso(t)), Ok(t));
+            black_box(say_tick(t, EVERY_FIELD)); // and say it with every field, as the fuzz across the editions does, which is where what it says gets compared
             cycles += 1;
         }
     }
     println!(
-        "rust fuzzed {cycles} ticks through both text forms in {seconds} seconds, {} a second",
+        "rust fuzzed {cycles} ticks through both text forms and say_tick in {seconds} seconds, {} a second",
         (cycles as f64 / seconds).round()
     );
 }

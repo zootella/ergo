@@ -743,11 +743,47 @@ const fuzzCenters = [
   ['9999dec31', Time.day],
 ]
 const lastTick = textToTick('9999dec31.2359.59999') //the ceiling, so a tick drawn near an edge center stays a tick
+const everyField = 'Dddd YYYY-MM-DD hh12:mm:ss.ttt AA' //a template that says every field of a tick, the weekday among them
 
 //a random tick within the radius of a center, clamped to the range of ticks
 function randomTick(center, radius) {
   let t = center + Math.floor(Math.random() * (2 * radius + 1)) - radius
   return Math.min(Math.max(t, 0), lastTick)
+}
+
+//a random span of milliseconds from zero to the integer ceiling, as often small as large, and as often negative
+function randomSpan() {
+  let size = Math.min(
+    Math.floor(10 ** (Math.random() * 16)) - 1,
+    Number.MAX_SAFE_INTEGER,
+  )
+  return Math.random() < 0.5 ? -size : size
+}
+//the pieces random templates are made of, in groups: the # and its fractions, twice, so most templates hold several; whitespace unicode counts, and three characters it doesn't that a platform's own idea of whitespace might; unit words in each spelling and a mix; and other text, with the long s and the kelvin sign, which a match blind to case would take for s and k
+const durationMarks = ['#', '#', '.', '#.#', '#.##', '#.###']
+const durationPieces = [
+  durationMarks,
+  durationMarks,
+  [...' \t\n\u00a0\u202f\u3000\u0085\ufeff\u200b\u001c'],
+  'y yrs mo Mo MO mos m M min Mins MINUTES w wks'.split(' '),
+  'd days Days DAYS h hr hours hOURS s S sec secs seconds'.split(' '),
+  ['x', ' and ', ' ago', 'é', '三', '🙂', 'ſ', '\u212a', '$&'],
+]
+//and for a tick: every tag, the letters and numerals tags are made of, and other text
+const tickPieces = [
+  'YYYY MMMM Mmmm mmmm MMM Mmm mmm MM M'.split(' '),
+  'DDDD Dddd dddd DDD Ddd ddd DD D'.split(' '),
+  'hh12 hh24 h12 h24 mm ss ttt tt t AA aa A a'.split(' '),
+  'Y m d dd h hh 1 2 4 s T Z'.split(' '),
+  [...' :-.,é三🙂', '$&'],
+]
+//a random template of one to twelve pieces, each from a group picked first, so a short group turns up as often as a long one
+function randomTemplate(groups) {
+  let pick = (a) => a[Math.floor(Math.random() * a.length)]
+  let template = ''
+  let length = 1 + Math.floor(Math.random() * 12)
+  for (let i = 0; i < length; i++) template += pick(pick(groups))
+  return template
 }
 
 //a random length, mostly short to land near the 64-byte blocks of the SHA hashes, sometimes long enough to cross several of BLAKE3's 1024-byte chunks
@@ -785,11 +821,12 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
           let t = randomTick(c, radius)
           if (textToTick(tickToText(t)) != t || isoToTick(tickToIso(t)) != t)
             throw new Error(`${t} did not round-trip`) //a plain check rather than expect, which would cost more than the functions under test
+          sayTick(t, everyField) //and say it with every field, as the fuzz across the editions does, which is where what it says gets compared
           cycles++
         }
       }
       console.log(
-        `javascript alone fuzzed ${cycles} ticks through both text forms in ${fuzzSeconds} seconds, ${Math.round(cycles / fuzzSeconds)} a second`,
+        `javascript alone fuzzed ${cycles} ticks through both text forms and sayTick in ${fuzzSeconds} seconds, ${Math.round(cycles / fuzzSeconds)} a second`,
       )
     },
     (fuzzSeconds + 60) * Time.second,
@@ -847,7 +884,6 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
     }, 180_000)
     afterAll(() => stopEditions(editions))
 
-    const everyField = 'Dddd YYYY-MM-DD hh12:mm:ss.ttt AA' //a template that says every field of a tick, the weekday among them
     test(
       'a random tick round-trips through both text forms in every edition, and every edition agrees',
       async () => {
@@ -874,7 +910,47 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
           }
         }
         console.log(
-          `every edition fuzzed ${cycles} ticks through both text forms in ${fuzzSeconds} seconds, ${Math.round(cycles / fuzzSeconds)} a second, each a round trip over the pipes to three drivers`,
+          `every edition fuzzed ${cycles} ticks through both text forms and sayTick in ${fuzzSeconds} seconds, ${Math.round(cycles / fuzzSeconds)} a second, each a round trip over the pipes to three drivers`,
+        )
+      },
+      (fuzzSeconds + 60) * Time.second,
+    )
+
+    test(
+      "a random template and span say the same in every edition, which pins rust's two scanners against three platforms' regular expressions",
+      async () => {
+        let stop = Date.now() + fuzzSeconds * Time.second
+        let cycles = 0
+        while (Date.now() < stop) {
+          let span = randomSpan()
+          let duration = randomTemplate(durationPieces)
+          let t = Math.floor(Math.random() * (lastTick + 1)) //any tick in the range, since what's random here is the template
+          let tick = randomTemplate(tickPieces)
+          let said = [
+            sayDuration(span, duration),
+            sayTick(t, tick),
+            sayTimeRemaining(span), //and the shortcuts on the same span
+            sayTimeRemainingCoarse(span),
+            sayTimeRace(span),
+          ]
+          await Promise.all(
+            Object.entries(editions).map(async ([name, e]) => {
+              expect(
+                [
+                  await e.sayDuration(span, duration),
+                  await e.sayTick(t, tick),
+                  await e.sayTimeRemaining(span),
+                  await e.sayTimeRemainingCoarse(span),
+                  await e.sayTimeRace(span),
+                ],
+                `${name}: ${JSON.stringify([span, duration, t, tick])}`, //the inputs, so a mismatch can be pinned as a vector
+              ).toEqual(said)
+            }),
+          )
+          cycles++
+        }
+        console.log(
+          `every edition fuzzed ${cycles} random templates through sayDuration and sayTick, and spans through the shortcuts, in ${fuzzSeconds} seconds, ${Math.round(cycles / fuzzSeconds)} a second`,
         )
       },
       (fuzzSeconds + 60) * Time.second,

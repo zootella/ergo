@@ -109,7 +109,7 @@ pub mod time {
 //
 // A unit only counts right after a #, so words and numbers around the tags pass through as they are: "about # days ago" says "about 3 days ago", and the d in "and" is only a letter. Only those exact spellings count, so a mix like hOURS is the tag h and then text, the way #hiring is. Whatever isn't a tag is written as it is, with no escaping and nothing refused, so a broken template writes text that's only wrong. The span is what must be right: a number of milliseconds within the integer ceiling, and anything else panics. It's an i64, so it has no fraction of a millisecond to drop, the way the editions that take a double do. A negative span says its size with a minus sign in front of everything, like "-2 hours 5 minutes", unless what it says is zero.
 //
-// The standard library has no regular expressions, so a short scanner finds the tags, trying the words in the same order the other editions do, each longer word before its prefixes, and the shared vectors hold it to the same cuts.
+// The standard library has no regular expressions, so a short scanner finds the tags, trying the words in the same order the other editions do, each longer word before its prefixes. Like a regular expression, it reads the template once, left to right, so a # it read as part of a fraction that makes no tag stays text rather than starting a tag of its own, and "#.##.#secs" says "#.##.3600secs" for an hour. The shared vectors hold it to the same cuts, and the fuzz test holds it to them on random templates.
 
 /// Each unit's words, whole and short, with the size of the unit in milliseconds, which is also how the code tells units apart; each longer word comes before its prefixes, since the first that matches wins, and a template writes each in lowercase, title case, or all capitals.
 const DURATION_WORDS: [(&str, i64); 24] = [
@@ -147,8 +147,8 @@ struct DurationTag<'a> {
     digits: u32,
 }
 
-/// The tag a duration template has at `i`, where the text has a #, and the index just past it; None if a # there doesn't start one. A tag whose fraction comes before a unit other than seconds still comes back, so the caller can keep all of it as text.
-fn duration_tag(template: &str, i: usize) -> Option<(DurationTag<'_>, usize)> {
+/// The tag a duration template has at `i`, where the text has a #, or None if a # there doesn't start one, and either way the index where the scan goes on. A tag whose fraction comes before a unit other than seconds still comes back, so the caller can keep all of it as text. With no tag, the scan goes on past the # and the fraction and whitespace it read, the way a regular expression moves past what it matched, so a # read as part of a fraction never starts a tag of its own.
+fn duration_tag(template: &str, i: usize) -> (Option<DurationTag<'_>>, usize) {
     let b = template.as_bytes();
     let mut j = i + 1; // past the #
     let mut digits = 0; // a fraction for seconds: a point and one to three more #
@@ -164,17 +164,19 @@ fn duration_tag(template: &str, i: usize) -> Option<(DurationTag<'_>, usize)> {
         j += c.len_utf8(); // any whitespace, which is_whitespace asks unicode about, a character at a time since most of it takes more than a byte
     }
     let rest = &b[j..];
-    let (word, unit) = DURATION_WORDS.iter().find(|(w, _)| spelled(rest, w))?;
+    let Some((word, unit)) = DURATION_WORDS.iter().find(|(w, _)| spelled(rest, w)) else {
+        return (None, j); // no unit's spelling starts what follows, so the # and any fraction it read are only text
+    };
     let end = j + word.len();
-    Some((
-        DurationTag {
+    (
+        Some(DurationTag {
             unit: *unit,
             whitespace: &template[whitespace_start..j],
             word: &template[j..end],
             digits,
-        },
+        }),
         end,
-    ))
+    )
 }
 
 /// True if `rest` starts with `word` spelled exactly in lowercase, title case, or all capitals, like days, Days, or DAYS.
@@ -213,8 +215,9 @@ pub fn say_duration(span: i64, template: &str) -> String {
             i += 1; // a # is ascii, so stepping a byte at a time never lands it inside another character
             continue;
         }
-        let Some((tag, end)) = duration_tag(template, i) else {
-            i += 1;
+        let (tag, end) = duration_tag(template, i);
+        let Some(tag) = tag else {
+            i = end; // past the # and any fraction it read, which stay text, so a # among them never starts a tag
             continue;
         };
         if tag.digits > 0 && tag.unit != time::SECOND {
