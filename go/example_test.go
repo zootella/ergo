@@ -8,6 +8,17 @@ import (
 	ergo "github.com/zootella/ergo/go"
 )
 
+// #region int
+func ExampleHasInt() {
+	carried := ergo.HasInt(9007199254740991) // 2^53 - 1, the largest integer every edition holds exactly
+	past := ergo.HasInt(1 << 53)             // past the ceiling, where a double can't tell one integer from the next
+	checked := ergo.CheckInt(1344230277300)  // passes an integer through, or panics because the caller handed it something that isn't one
+	fmt.Println(carried, past, checked)
+	// Output: true false 1344230277300
+}
+
+// #endregion int
+
 // #region size
 func ExampleSaySize4() {
 	buffer := make([]byte, 64*ergo.KB) // a buffer of 64 kibibytes, rather than a bare 65536
@@ -27,6 +38,18 @@ func ExampleHour() {
 
 // #endregion time
 
+// #region sayduration
+func ExampleSayDuration() {
+	took := ergo.SayDuration(2*ergo.Hour+5*ergo.Minute, "# hours # minutes") // the template is the sentence, with # where each number goes
+	ago := ergo.SayDuration(3*ergo.Day, "about # days ago")
+	left := ergo.SayTimeRemaining(9*ergo.Minute + 59*ergo.Second)  // one or two units, whichever matter at the size
+	race := ergo.SayTimeRace(5*ergo.Minute + 15*ergo.Second + 223) // to the millisecond, the way a race is timed
+	fmt.Println(took + " | " + ago + " | " + left + " | " + race)
+	// Output: 2 hours 5 minutes | about 3 days ago | 9m 59s | 5'15"223
+}
+
+// #endregion sayduration
+
 // #region tick
 func ExampleTickToText() {
 	t := int64(1344230277300)        // a tick: milliseconds since 1970, the way time.Now().UnixMilli() counts; this one is the Curiosity landing
@@ -39,6 +62,18 @@ func ExampleTickToText() {
 }
 
 // #endregion tick
+
+// #region saytick
+func ExampleSayTick() {
+	t := int64(1344230277300)                           // the Curiosity landing
+	page := ergo.SayTick(t, "Dddd, Mmmm D, YYYY")       // uppercase tags are the calendar
+	log := ergo.SayTick(t, "YYYY-MM-DD hh24:mm:ss.ttt") // lowercase tags are the clock
+	clock := ergo.SayTick(t, "h12:mm AA")
+	fmt.Println(page + " | " + log + " | " + clock)
+	// Output: Monday, August 6, 2012 | 2012-08-06 05:17:57.300 | 5:17 AM
+}
+
+// #endregion saytick
 
 // #region tag
 func ExampleTag() {

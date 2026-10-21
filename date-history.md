@@ -327,17 +327,89 @@ The clearest way to see the field's disagreement is to ask what one letter means
 | MySQL `DATE_FORMAT` | `%M` October | `%m` the month, 10 | `%D` 20th | `%Y` the year |
 | Excel | the month, or the minute beside an hour or second | the same | the day | the year |
 
-And the 7 / 07 / Jun / June axis, with the 12-hour clock and milliseconds, in five systems:
+The month alone shows how far the lineages have drifted. Here's July in each well-known system, as a number, padded, short, long, and as the single letter a calendar's column header uses:
+
+| | 7 | 07 | Jul | July | J | Also |
+|---|---|---|---|---|---|---|
+| C `strftime` | none | `%m` | `%b` | `%B` | none | POSIX adds `%h`, the same as `%b` |
+| GNU, BSD, Ruby, chrono | `%-m` | `%m` | `%b` | `%B` | none | glibc and Ruby write JUL for `%^b` |
+| Windows C runtime | `%#m` | `%m` | `%b` | `%B` | none | |
+| Python `strftime` | `%-m` or `%#m` | `%m` | `%b` | `%B` | none | it hands the pattern to the platform's C library, so no way of dropping the zero works everywhere |
+| LDML: ICU, Java, Apple, date-fns | `M` | `MM` | `MMM` | `MMMM` | `MMMMM` | `L` through `LLLLL` for the month standing alone, which some languages inflect differently |
+| Moment, Day.js | `M` | `MM` | `MMM` | `MMMM` | none | Moment's `Mo` writes 7th |
+| Luxon | `M` | `MM` | `MMM` | `MMMM` | `MMMMM` | `L` through `LLLLL`, as in LDML |
+| .NET | `%M` | `MM` | `MMM` | `MMMM` | none | a lone `M` is the standard month-and-day format, July 4, so the number alone is `%M` |
+| Excel | `m` | `mm` | `mmm` | `mmmm` | `mmmmm` | `m` and `mm` are the minute beside an hour or a second |
+| PHP `date()` | `n` | `m` | `M` | `F` | none | |
+| MySQL `DATE_FORMAT` | `%c` | `%m` | `%b` | `%M` | none | `%M` is the minute in every other strftime |
+| Oracle, PostgreSQL `TO_CHAR` | `FMMM` | `MM` | `Mon` | `Month` | none | the pattern's case sets the output's, so `MONTH` writes JULY; `Month` pads to nine characters without `FM`; `RM` writes VII |
+| Go | `1` | `01` | `Jan` | `January` | none | the reference time's own month |
+| Rust `time` | `[month padding:none]` | `[month]` | `[month repr:short]` | `[month repr:long]` | none | |
+| `Intl.DateTimeFormat` | `month: 'numeric'` | `month: '2-digit'` | `month: 'short'` | `month: 'long'` | `month: 'narrow'` | options, not a pattern, and the locale arranges them |
+| Swift `FormatStyle` | `.month(.defaultDigits)` | `.month(.twoDigits)` | `.month(.abbreviated)` | `.month(.wide)` | `.month(.narrow)` | named fields, and the locale arranges them |
+
+And the 12-hour clock and milliseconds, in five of them:
 
 | | strftime | LDML | Moment | Go | Rust `time` |
 |---|---|---|---|---|---|
-| 7 | `%-m`, an extension | `M` | `M` | `1` | `[month padding:none]` |
-| 07 | `%m` | `MM` | `MM` | `01` | `[month]` |
-| Jun | `%b` | `MMM` | `MMM` | `Jan` | `[month repr:short]` |
-| June | `%B` | `MMMM` | `MMMM` | `January` | `[month repr:long]` |
 | 3, as in 3 PM | `%-I`, an extension | `h` | `h` | `3` | `[hour repr:12 padding:none]` |
 | PM | `%p` | `a` | `A` | `PM` | `[period]` |
 | .026 | none in C | `SSS` | `SSS` | `.000` | `[subsecond digits:3]` |
+
+## The classic collisions
+
+The collisions that bite come in a few shapes, and the same ones turn up in system after system.
+
+**Within one system**, two fields that sit side by side in a pattern differ only by case or by what's next to them:
+
+- **Month and minute.** `M` and `m` in LDML, `%m` and `%M` in strftime, and in Excel one `m`, decided by whether an hour or a second stands beside it.
+- **Second and its fraction.** LDML's `s` is the second and `S` a fraction of it. In Java's SimpleDateFormat, `S` was a count of milliseconds rather than a fraction, so `ss.SS` wrote 1.007 seconds as `01.07`.
+- **Year and week-numbering year.** `yyyy` and `YYYY`, above.
+- **Day of the month, of the year, and of the week.** LDML's `d`, `D`, and `E`, where `DD` agrees with `dd` all through January.
+- **The 24-hour and 12-hour clocks.** `HH` and `hh` in LDML, `%H` and `%I` in strftime, and `hh:mm` without AM or PM writes a time that's ambiguous half the day. LDML adds `k` and `K`, a 24-hour clock from 1 to 24 and a 12-hour clock from 0 to 11.
+- **The zone's name and its offset.** In strftime, `%Z` writes PDT and `%z` writes -0700. LDML has them the other way around, `z` and `Z`, along with `X`, `x`, `O`, `v`, and `V`.
+
+**Letters with no mnemonic** have to be looked up every time, by the writer and by every reader after:
+
+- strftime: `%b` for the short month, `%e` for the day padded with a space, `%I` for the 12-hour hour, `%j` for the day of the year, and `%p` for AM or PM.
+- PHP: `F` for the month's name and `M` for its short form, `n` for its number, `j` for the day, `i` for the minute, `z` for the day of the year counted from zero, `N` for the weekday's number, and `l`, a lowercase L, for its name.
+- MySQL: `%i` for the minute, `%c` for the month's number, and `%W` for the weekday's name.
+- LDML: `E` for the weekday, `a` for AM or PM, `G` for the era, and `F` for which Wednesday of the month it is.
+
+**strftime and LDML flip.** The two big families give many of the same letters to different fields, and some pairs swap their cases between the two:
+
+| Letter | strftime | LDML |
+|---|---|---|
+| `m` | the month | the minute |
+| `M` | the minute | the month |
+| `s` | seconds since 1970, an extension | the second |
+| `S` | the second | a fraction of a second |
+| `h` | the short month, like `%b` | the hour, 1 to 12 |
+| `y` | the year in two digits | the year |
+| `Y` | the year | the week-numbering year |
+| `D` | the date, like 10/20/26 | the day of the year |
+| `a` | the short weekday | AM or PM |
+| `e` | the day of the month, padded with a space | the weekday as a local number |
+| `u` | the weekday, 1 for Monday | the extended year |
+| `w` | the weekday, 0 for Sunday | the week of the year |
+| `z` | the offset, -0700 | the zone's name, PDT |
+| `Z` | the zone's name, PDT | the offset, -0700 |
+
+**Across systems**, a letter familiar from one means something else in the next:
+
+- MySQL kept strftime's `%` and moved the letters. Its `%M` is the month's name, `%h` the 12-hour hour, `%c` the month's number, `%D` the day with a suffix, like 20th, and `%W` the weekday's name. In strftime those are the minute, the short month, the whole date and time, the date like 10/20/26, and the week of the year.
+- PHP's `D` is the short weekday, Tue, where LDML's is the day of the year and Moment's the day of the month. Its `S` is a suffix like th, where LDML's is a fraction of a second, and its `Z` is the offset in seconds, -25200.
+- Moment's `YYYY` and `DD` are the calendar year and the day of the month, and its users carry the habit to LDML libraries, where they're the week-numbering year and the day of the year; that's why date-fns throws on both. Moment's `d` is the weekday's number and `dd` its two-letter name, Tu, where LDML's `d` is the day of the month.
+- Luxon's `D` is a whole localized date, like 10/20/2026.
+- Oracle's and PostgreSQL's `HH` is the 12-hour hour. The 24-hour hour is `HH24`.
+- .NET's `K` writes the zone as Z, an offset, or nothing, depending on the kind of DateTime it's given, and its `z` writes the offset's hours, -7, where LDML's `z` is the zone's name. A lone `M` is a whole standard format, not the month.
+- java.time's `u` is the year, where SimpleDateFormat's was the weekday's number, so a pattern moved from one to the other changes meaning without an error.
+- Go reads anything that looks like part of its reference time as a field and the rest as text. `YYYY-MM-DD` comes out unchanged, `Version 1: 2006` comes out `Version 10: 2026`, and the word Monday in a layout becomes the date's weekday.
+
+**Two root causes** account for nearly all of it:
+
+1. **The alphabet runs out.** A moment has more parts than there are letters, once widths, case, the 12-hour clock, week-numbering years, and zones are counted. So every system reuses letters: by case, like `M` and `m`; by count, like `M` through `MMMMM`; and by neighbors, like Excel's `m`. Each reuse is a pair a reader has to keep apart.
+2. **Lineages drift.** Each system copied an earlier one and changed what bothered it. MySQL kept strftime's `%` and moved its letters, Moment kept LDML's letters and moved `Y`, `D`, and `d`, and java.time kept SimpleDateFormat's and moved `u`. The letters stay familiar while their meanings change, so a habit that serves in one system misleads in the next.
 
 ## Relative time
 

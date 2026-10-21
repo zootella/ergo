@@ -1,0 +1,9 @@
+[
+  {"function": "hasInt", "input": [0], "output": true, "note": "zero"},
+  {"function": "hasInt", "input": [1344230277300], "output": true, "note": "a tick is an integer"},
+  {"function": "hasInt", "input": [-1], "output": true, "note": "and so is a negative"},
+  {"function": "hasInt", "input": [9007199254740991], "output": true, "note": "the ceiling: 2^53 - 1, the largest integer a double holds along with every integer below it"},
+  {"function": "hasInt", "input": [-9007199254740991], "output": true, "note": "and the floor"},
+  {"function": "checkInt", "input": [1344230277300], "output": 1344230277300, "note": "passes an integer through"},
+  {"function": "checkInt", "input": [-9007199254740991], "output": -9007199254740991, "note": "the floor passes"}
+]

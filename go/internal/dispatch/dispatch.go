@@ -18,6 +18,10 @@ func Call(name string, args []any) (result any, err error) {
 		}
 	}()
 	switch name {
+	case "hasInt":
+		return ergo.HasInt(integer(args, 0)), nil
+	case "checkInt":
+		return ergo.CheckInt(integer(args, 0)), nil
 	case "Size.b":
 		return ergo.B, nil
 	case "Size.kb":
@@ -48,6 +52,14 @@ func Call(name string, args []any) (result any, err error) {
 		return ergo.Year, nil
 	case "Time.month":
 		return ergo.Month, nil
+	case "sayDuration":
+		return ergo.SayDuration(integer(args, 0), text(args, 1)), nil
+	case "sayTimeRemaining":
+		return ergo.SayTimeRemaining(integer(args, 0)), nil
+	case "sayTimeRemainingCoarse":
+		return ergo.SayTimeRemainingCoarse(integer(args, 0)), nil
+	case "sayTimeRace":
+		return ergo.SayTimeRace(integer(args, 0)), nil
 	case "hasTick":
 		return ergo.HasTick(integer(args, 0)), nil
 	case "checkTick":
@@ -60,6 +72,12 @@ func Call(name string, args []any) (result any, err error) {
 		return ergo.TickToISO(integer(args, 0)), nil
 	case "isoToTick":
 		return ergo.ISOToTick(text(args, 0))
+	case "monthNames":
+		return ergo.MonthNames(), nil
+	case "dayNames":
+		return ergo.DayNames(), nil
+	case "sayTick":
+		return ergo.SayTick(integer(args, 0), text(args, 1)), nil
 	case "tagLength":
 		return ergo.TagLength, nil
 	case "Tag":

@@ -82,6 +82,8 @@ The placeholder took three tries, and each one taught something.
 
 The key idea came from a question: would the d in "and" be read as days? It isn't, because a tag is the `#` and its unit together, and a unit letter only means anything right after a `#`. So, unlike `sayTick`, a duration template can hold words: `about # hours ago`, `landed # days ago`, `# hours and # minutes`. A `#` with no unit after it is just a `#`.
 
+Between the `#` and its unit can go whitespace, and nothing else. That's what keeps the pair a pair: a `#` with a word after it that isn't a unit, like `# of 10 days`, stays text, rather than reaching past the word for a unit further on and counting days. Whitespace is any character Unicode calls white space, so a tab and a line break count, and so does the no-break space a typographer puts there to keep "5 days" on one line, and its narrow and thin cousins. The byte order mark and the zero width space don't, since they're invisible without being space. Each of the four languages has its own idea of whitespace, and they disagree by a few characters: JavaScript's `\s` counts the byte order mark, Python's `isspace` counts four control separators, and Go's `\s` is five ASCII characters. So JavaScript and Rust ask Unicode's own property, and Python and Go write its list out, and every edition reads the same characters.
+
 Only seconds take a fraction, `#.#`, `#.##`, or `#.###`. A fraction in front of any other unit isn't a tag, and the whole thing is kept as text, so that its last `#` can't pair with the unit on its own and write something like `0.05 minutes`.
 
 ### Splitting the span
@@ -102,7 +104,7 @@ The cost lands on templates that name more precision than a span needs. The full
 
 ### Plurals, case, and short forms
 
-Every template writes the plural, and the output picks the singular for exactly 1: `# days` says `1 day` and `2 days`. Only a bare 1 is singular, so `1.0 seconds` stays plural, the way English treats decimals. The short plurals, `yrs`, `mos`, `wks`, `hrs`, `mins`, and `secs`, follow the same rule, so `# yrs # mos` says `1 yr 1 mo` the way a profile does. A single letter like `d` never changes. Units can be written in any case and keep it, so `# Days Left` and `# HOURS` work, in the spirit of `sayTick` following its tags' case.
+Every template writes the plural, and the output picks the singular for exactly 1: `# days` says `1 day` and `2 days`. Only a bare 1 is singular, so `1.0 seconds` stays plural, the way English treats decimals. The short plurals, `yrs`, `mos`, `wks`, `hrs`, `mins`, and `secs`, follow the same rule, so `# yrs # mos` says `1 yr 1 mo` the way a profile does. A single letter like `d` never changes. Units can be written in lowercase, title case, or all capitals and keep it, so `# Days Left` and `# HOURS` work, in the spirit of `sayTick` following its tags' case. Those three spellings are matched exactly, so a mix like `hOURS` is only the tag `h` and then text, and ergo never matches anything case-insensitively, which would bring each language's own rules about case into it.
 
 ### The m problem
 
@@ -116,19 +118,21 @@ The first draft refused a negative span, which under ergo's rule would have need
 
 ### Three shortcuts, from node
 
-Reading node, ergo's ancestor from 2013, turned up three ways of saying time that ergo now has. Each is a few lines on top of `sayDuration` or `sayTick`, so ergo is built from ergo.
+Reading node, ergo's ancestor from 2013, turned up three ways of saying time that ergo now has. The first two are a few lines on top of `sayDuration`, so ergo is built from ergo, and the third writes its own three numbers.
 
 `sayTimeRemaining` picks its own template by the span's size, by a rule of significant units: two units while the larger is a single digit, then one. It says `45s`, then `1m 0s` through `9m 59s`, `10m` through `59m`, `1h 0m` through `9h 59m`, `10h` through `71h`, and then `3d`. It stays in hours up to 71, because `71h` is plainer than `2d 23h` for something that finishes this week. A template can't do this on its own, since a template's precision is fixed; `sayTimeRemaining` decides how precise a duration should be at each size, which is the feed's ladder, made once.
 
 `sayTimeRemainingCoarse` rounds the seconds down to a multiple of 5, so a countdown on a page steps instead of flickering, and lets the last five seconds count down one at a time. The idea, and the reason, that a countdown shouldn't be distracting, are node's.
 
-`sayTimeRace` writes `5'15"223`, minutes, seconds, and milliseconds with prime marks, the minutes taking everything above them. It's ergo's first answer to durations shaped like a clock. Its seconds and milliseconds are padded, which `sayDuration` never does, so it takes them from `sayTick`, reading the rest of the minute as a tick in the first minute of 1970.
+`sayTimeRace` writes `5'15"223`, minutes, seconds, and milliseconds with prime marks, the minutes taking everything above them. It's ergo's first answer to durations shaped like a clock. Its seconds and milliseconds are padded, which `sayDuration` never does, so it writes the three numbers itself. A first draft borrowed `sayTick` for the padding, reading the rest of the minute as a tick in the first minute of 1970. That was ergo built from ergo, but a span isn't a tick, and a page importing `sayTimeRace` carried `sayTick` and its name lists along. ergo uses ergo where it helps, not everywhere it could, and here a shorter call stack was plainer.
 
 Three of node's other ideas stayed behind on purpose: thousands separators in big counts, one-letter weekdays, which nobody agrees on, and `sayFraction`'s rates and percentages, like `#/s` and `#%`. That last one puts the idea of a tag as a pair to work on other quantities, and may come back someday.
 
 ### What throws, and what doesn't
 
-Both functions share one stance. A caller's bug in the input throws: a tick that isn't one, a span that isn't a whole number within the integer ceiling, a template that isn't text. Anything wrong inside a template comes out as text that's only wrong, as well as the function can manage. ergo's rule says every refused value has a `has` that asks first: `hasTick` does that for `sayTick`, and the one refusal `sayDuration` has left is exactly the integer check every edition is meant to offer as `checkInt`, so spans don't need a predicate of their own.
+Both functions share one stance. A caller's bug in the input throws: a tick that isn't one, a span that isn't a whole number within the integer ceiling, a template that isn't text. Anything wrong inside a template comes out as text that's only wrong, as well as the function can manage. ergo's rule says every refused value has a `has` that asks first: `hasTick` does that for `sayTick`, and the one refusal `sayDuration` has left is exactly `checkInt`, so `hasInt` asks first for spans, which need no predicate of their own. One wrinkle is kept on purpose. In JavaScript and Python, which can hand over a fraction of a millisecond, a say function drops it before it checks, so it takes 1.5, which `hasTick` and `hasInt` refuse. The question to ask first about such a number is the `has` of its whole part: `hasTick` of its floor, or `hasInt` of its truncation. It's the one place a say function accepts more than its `has` does, and it's fine because nothing reads the text back.
+
+`saySize4` takes the same stance without the wrinkle. A fraction of a millisecond is a clock's real precision, but a fraction of a byte is a mistake upstream, so it refuses any count that isn't a whole number zero or more within the ceiling, and `hasInt(n) && n >= 0` asks first. In Rust and Go it takes a u64 and a uint64, which can't hold a negative or a fraction, so the type does the refusing and nothing panics.
 
 ## The smoke test
 
@@ -158,14 +162,6 @@ if (age < Time.day) return sayDuration(age, '#h')
 return sayTick(t, 'Mmm D') // 45s, 5m, 3h, Oct 18
 ```
 
-That's how ergo says how long ago a tweet was tweeted or a LinkedIn post was posted. The smoke test also settled three earlier worries. Rounding down is what the apps do. Dropping zeros at the start is right for every app that uses words, and an app that also drops a trailing zero, like Maps, picks its template by the span's size, the way `sayTimeRemaining` does. And "and" never appears in their durations.
+That's how ergo says how long ago a tweet was tweeted or a LinkedIn post was posted. A feed's "just now" belongs in those same lines: the app decides how young a post has to be to be just now, says that itself, and calls `sayDuration` only past it. ergo doesn't build the ladder, since every app's rungs are different. The smoke test also settled three earlier worries. Rounding down is what the apps do. Dropping zeros at the start is right for every app that uses words, and an app that also drops a trailing zero, like Maps, picks its template by the span's size, the way `sayTimeRemaining` does. And "and" never appears in their durations.
 
-It also found the gap: durations shaped like a clock. A video's length `12:34`, a call's timer `05:09`, a race `1:02:03`, a countdown. Apps that need a fixed shape use a clock, and that's where the fixed-shape need really lives. `sayTick` on a span almost works, but it writes a needless hour, `0:12:34`, and past a day it silently wraps, so 26 hours says `2:00:00`. `sayTimeRace` now covers a race, in a race's own notation; a video's `12:34` and a call's `05:09` are still open.
-
-## Still open
-
-- Clock-shaped durations, like `12:34` and `1:02:03`: their own function, or tags inside `sayDuration`. `sayTimeRace` covers a race's own notation.
-- A no-break space between `#` and its unit, which typographers use to keep "5 days" on one line, and which today doesn't count as a space.
-- The feed's ladder: `sayTimeRemaining` covers a span counting down or up, and a feed's switch to a date once a post is a day old is still a few lines of the caller's.
-- Porting all five functions to Python, Rust, and Go, with their cases moved into shared vectors, and then CLAUDE.md's status and a page on the site.
-- The same stance for `saySize4`, which has no guard today: throw on a count that isn't one.
+It also found the gap: durations shaped like a clock. A video's length `12:34`, a call's timer `05:09`, a race `1:02:03`, a countdown. Apps that need a fixed shape use a clock, and that's where the fixed-shape need really lives. `sayTick` on a span almost works, but it writes a needless hour, `0:12:34`, and past a day it silently wraps, so 26 hours says `2:00:00`. `sayTimeRace` now covers a race, in a race's own notation. A video's `12:34` and a call's `05:09` are left out for now, as their own function or as tags inside `sayDuration`, until a caller needs one.

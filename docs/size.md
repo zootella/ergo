@@ -13,6 +13,6 @@ Numbers of bytes in the binary units that memory and storage are measured in: `S
 <<< ../go/example_test.go#size
 :::
 
-`saySize4` says a count of bytes in four digits or less, with a unit: `0 bytes`, `1 byte`, `1023 bytes`, `9999 bytes`, then `9 KB`, and up through `8191 TB` at the integer ceiling. The count always rounds down, and the unit only climbs when the digits would reach five, so a mebibyte exactly is `1024 KB`. The labels are the everyday ones, KB and MB, while the arithmetic is in 1024s.
+`saySize4` says a count of bytes in four digits or less, with a unit: `0 bytes`, `1 byte`, `1023 bytes`, `9999 bytes`, then `9 KB`, and up through `8191 TB` at the integer ceiling. The count always rounds down, and the unit only climbs when the digits would reach five, so a mebibyte exactly is `1024 KB`. The labels are the everyday ones, KB and MB, while the arithmetic is in 1024s. A count is a whole number of bytes, zero or more: a negative or a fraction of a byte is a bug in the caller, so `saySize4` throws in JavaScript and raises in Python, while Rust and Go take a `u64` and a `uint64`, which can't hold either. About a number from outside, ask `hasInt(n) && n >= 0` first.
 
 Each example above is real code from its edition, verified by that edition's own tests: a vitest demonstration, a Python doctest, a Rust example that cargo compiles, and a Go example that `go test` runs.

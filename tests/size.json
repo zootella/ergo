@@ -21,5 +21,7 @@
   {"function": "saySize4", "input": [1073741824], "output": "1024 MB", "note": "one gibibyte"},
   {"function": "saySize4", "input": [1099511627776], "output": "1024 GB", "note": "one tebibyte"},
   {"function": "saySize4", "input": [1125899906842624], "output": "1024 TB", "note": "one pebibyte"},
-  {"function": "saySize4", "input": [9007199254740991], "output": "8191 TB", "note": "the integer ceiling, 2^53 - 1, which every edition says the same way"}
+  {"function": "saySize4", "input": [9007199254740991], "output": "8191 TB", "note": "the integer ceiling, 2^53 - 1, which every edition says the same way"},
+  {"function": "saySize4", "input": [-1], "throws": true, "note": "a count is never negative"},
+  {"function": "saySize4", "input": [1.5], "throws": true, "note": "nor a fraction, since there's no half a byte; a caller holding one has a bug upstream, or rounds first the way it means to"}
 ]

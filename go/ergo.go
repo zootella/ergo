@@ -12,6 +12,7 @@ import (
 	"hash"
 	"io"
 	"math"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,6 +22,23 @@ import (
 	"golang.org/x/text/unicode/norm"
 	"lukechampine.com/blake3"
 )
+
+// An integer in ergo is one every edition holds exactly: a whole number from -(2^53 - 1) through 2^53 - 1, JavaScript's safe range. Past it, a double can't tell one integer from the next, so a number that crossed from Rust or Go into a page could quietly change. HasInt asks whether a value is one, and asking never panics, so a number from outside can be asked about first; CheckInt is the guard that enforces the same answer.
+
+const intCeiling = 1<<53 - 1 // the largest integer a double holds along with every integer below it
+
+// HasInt is true if i is an integer every edition holds exactly, a whole number from -(2^53 - 1) through 2^53 - 1. It never panics, so a number from outside can be asked about first.
+func HasInt(i int64) bool {
+	return -intCeiling <= i && i <= intCeiling
+}
+
+// CheckInt is a guard: it passes an integer through, or panics because the caller handed it something that isn't one, which is a bug in the caller, not an ordinary answer to handle. Ask HasInt first about a number from outside.
+func CheckInt(i int64) int64 {
+	if !HasInt(i) {
+		panic(fmt.Sprintf("not an integer: %d", i))
+	}
+	return i
+}
 
 // Numbers of bytes in the binary units that memory and storage are measured in, 1024 to each rather than 1000, so 64*ergo.KB names what a bare 65536 would hide. Untyped, so they multiply an int, an int64, or a uint64 alike.
 const (
@@ -36,6 +54,7 @@ const (
 var sizeUnits = []string{" KB", " MB", " GB", " TB", " PB", " EB", " ZB", " YB"}
 
 // SaySize4 says a count of bytes in four digits or less with a unit, like "1 byte", "2 bytes", or "117 MB". The count rounds down.
+// A uint64 is never negative or a fraction, the counts the JavaScript and Python editions refuse, and past the integer ceiling SaySize4 still says it right, so nothing here panics.
 func SaySize4(n uint64) string {
 	if n <= 9999 { // at most four digits of bytes, so say bytes
 		s := "s"
@@ -66,6 +85,215 @@ const (
 	Month       = Year / 12       // a twelfth of that year, also exact
 )
 
+// SayDuration says a span of time for a person to read: how long something took, or how long ago it happened, like "2 hours 5 minutes" or "about 3 days ago". The template is the sentence it writes, with a # wherever a number goes. A tag is that #, any whitespace, and the unit after it: years, months, weeks, days, hours, minutes, or seconds, or one of the short forms yrs, yr, y, mos, mo, wks, w, d, hrs, hr, h, mins, min, m, secs, sec, and s, each written in lowercase, title case, or all capitals, like days, Days, and DAYS. Seconds can also take a fraction, #.#, #.##, or #.###, for tenths, hundredths, or thousandths, and no other unit can. Each # after the point is a digit always written, so 1.5 seconds says "1.500" under #.###, the way Excel's 0.000 writes it rather than its #.###. The whitespace can be any character Unicode calls white space: a space, a tab, or the no-break space a typographer puts there to keep "5 days" on one line.
+//
+// The units a template names split the span between them, and a template lists them from largest to smallest. The largest takes everything above it, so a year said in days is 365, and each smaller unit takes what's left. Everything rounds down, so whatever is smaller than the smallest unit goes unsaid. A year and a month are ergo.Year and ergo.Month, the averages over the leap cycle, so SayDuration agrees with the rest of ergo, and a span of 365 days is a quarter of a day short of a year.
+//
+// A bare m is the one word that could be two units. On its own it's minutes, the way "5m" is in a feed, but because a template runs from largest to smallest, an m right after years, or right before weeks, days, or hours, can only be months, so "#y #m #d" says "1y 2m 3d" and "#d #h #m" says "1d 2h 3m".
+//
+// A plural, whole or short, comes out singular for exactly 1, in the case it was written in, so "# days" says "1 day" and "2 days", "# hrs" says "1 hr", and "# DAYS" says "1 DAY"; a single letter, like d, never changes.
+//
+// Units that come out zero at the start drop away, along with the text after them, so a template ready to say days can count up a task half an hour old: "#d #h #m #.##s" says "32m 55.45s", never "0d 0h 32m 55.45s". From the first unit that isn't zero, everything stays. A zero between two others stays, so a day and a second is "1 day 0 hours 0 minutes 1 second" rather than "1 day 1 second". And the smallest unit a template names is the precision it asks for, so it always shows, even on an exact amount: "#m #s" says "1m 0s" for exactly a minute. If every unit is zero, the last and smallest one says so, like "0 minutes".
+//
+// A unit only counts right after a #, so words and numbers around the tags pass through as they are: "about # days ago" says "about 3 days ago", and the d in "and" is only a letter. Only those exact spellings count, so a mix like hOURS is the tag h and then text, the way #hiring is. Whatever isn't a tag is written as it is, with no escaping and nothing refused, so a broken template writes text that's only wrong. The span is what must be right: a number of milliseconds within the integer ceiling, and anything else panics. It's an int64, so it has no fraction of a millisecond to drop, the way the editions that take a double do. A negative span says its size with a minus sign in front of everything, like "-2 hours 5 minutes", unless what it says is zero.
+
+// durationWords is each unit's words, whole and short, with the size of the unit in milliseconds, which is also how the code tells units apart; each longer word comes before its prefixes, since the first that matches wins, and a template writes each in lowercase, title case, or all capitals
+var durationWords = [...]struct {
+	word string
+	unit int64
+}{
+	{"years", Year}, {"yrs", Year}, {"yr", Year}, {"y", Year},
+	{"months", Month}, {"mos", Month}, {"mo", Month},
+	{"weeks", Week}, {"wks", Week}, {"w", Week},
+	{"days", Day}, {"d", Day},
+	{"hours", Hour}, {"hrs", Hour}, {"hr", Hour}, {"h", Hour},
+	{"minutes", Minute}, {"mins", Minute}, {"min", Minute}, {"m", Minute}, // or months, by where it sits; SayDuration below decides
+	{"seconds", Second}, {"secs", Second}, {"sec", Second}, {"s", Second},
+}
+
+// durationTag is a tag in a duration template: its unit's size, the whitespace and word it was written with, and how many digits of a second it wants
+type durationTag struct {
+	unit       int64
+	whitespace string
+	word       string
+	digits     int
+}
+
+// durationTags finds a #, a fraction for seconds, any whitespace, and the run of english letters after them, where SayDuration looks for a unit's word;
+// the whitespace is unicode's white space written out, since \s in Go's regexp is only five ascii characters
+var durationTags = regexp.MustCompile(`#(\.#{1,3})?([\t\n\v\f\r \x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*)([A-Za-z]*)`)
+
+// durationWord is the word as written and its unit, for the unit a run of letters starts with, spelled exactly in lowercase, title case, or all capitals, like days, Days, or DAYS, trying each longer word before its prefixes, or false
+func durationWord(letters string) (string, int64, bool) {
+	for _, w := range durationWords {
+		title := strings.ToUpper(w.word[:1]) + w.word[1:]
+		for _, spelling := range []string{w.word, title, strings.ToUpper(w.word)} {
+			if strings.HasPrefix(letters, spelling) {
+				return spelling, w.unit, true
+			}
+		}
+	}
+	return "", 0, false
+}
+
+// SayDuration says a span of milliseconds in the units a template names, like "# hours # minutes" for "2 hours 5 minutes"; one way, with no reader. It panics if span is past the integer ceiling, 2^53 - 1 either way, which is a bug in the caller; ask HasInt first about a number from outside.
+func SayDuration(span int64, template string) string {
+	CheckInt(span)
+
+	// cut the template once, into its tags and the text around them
+	var texts []string // the text before each tag, and then the text after the last one
+	var tags []durationTag
+	at := 0 // where the text not yet cut begins
+	for _, m := range durationTags.FindAllStringSubmatchIndex(template, -1) {
+		// m holds the start and end of the whole match, and then of each group: the fraction, the whitespace, and the letters
+		word, unit, ok := durationWord(template[m[6]:m[7]])
+		if !ok {
+			continue // no unit's spelling starts the letters, so the # is only text
+		}
+		digits := 0
+		if m[2] >= 0 {
+			digits = m[3] - m[2] - 1 // the # after the point
+		}
+		if digits > 0 && unit != Second {
+			continue // a fraction only says seconds; before any other unit, the whole match stays text, so its last # can't make a tag of its own
+		}
+		texts = append(texts, template[at:m[0]])
+		tags = append(tags, durationTag{unit, template[m[4]:m[5]], word, digits})
+		at = m[6] + len(word) // just past the unit's word, so any letters after it stay text, like the "iring" of "#hiring"
+	}
+	texts = append(texts, template[at:])
+	if len(tags) == 0 {
+		return template // no tags, so nothing to fill in
+	}
+
+	// a bare m is minutes, unless it sits where only months fit in a template that runs from largest to smallest: right after years, or right before weeks, days, or hours
+	for i := range tags {
+		if tags[i].word != "m" && tags[i].word != "M" {
+			continue
+		}
+		var before, after int64 // the units of the tags on either side, if there are any
+		if i > 0 {
+			before = tags[i-1].unit
+		}
+		if i+1 < len(tags) {
+			after = tags[i+1].unit
+		}
+		if before == Year || after == Week || after == Day || after == Hour {
+			tags[i].unit = Month
+		}
+	}
+
+	// split the span among the units named, largest first, each taking all of itself that fits in what's left
+	var units []int64
+	for _, tag := range tags {
+		units = append(units, tag.unit)
+	}
+	slices.Sort(units)
+	slices.Reverse(units)
+	units = slices.Compact(units)
+	counts := map[int64]int64{}
+	left := span // milliseconds not yet said; a negative span says its size, and gets its minus sign at the end
+	if left < 0 {
+		left = -left
+	}
+	for _, unit := range units {
+		counts[unit] = left / unit
+		left %= unit
+	} // left now holds the remainder that rounds away, or the fraction of a second
+
+	// write each tag, then keep everything from the first tag that isn't zero through the end
+	said := make([]string, len(tags))
+	first := -1 // zeros at the start drop away, along with the text after them
+	for i, tag := range tags {
+		count := counts[tag.unit]
+		number := strconv.FormatInt(count, 10)
+		zero := count == 0
+		if tag.digits > 0 {
+			fraction := left / int64(math.Pow10(3-tag.digits)) // tenths, hundredths, or thousandths of the second, rounded down
+			number += fmt.Sprintf(".%0*d", tag.digits, fraction)
+			zero = zero && fraction == 0
+		}
+		word := tag.word
+		if number == "1" && len(word) > 1 && (strings.HasSuffix(word, "s") || strings.HasSuffix(word, "S")) {
+			word = word[:len(word)-1] // a plural, whole or short, is singular for exactly 1, like day, hr, and DAY; the single letter s is seconds, not a plural, and never changes
+		}
+		said[i] = number + tag.whitespace + word
+		if !zero && first == -1 {
+			first = i
+		}
+	}
+	sign := ""
+	if first == -1 {
+		first = len(said) - 1 // every unit is zero, so say the last and smallest, like "0 minutes"
+	} else if span < 0 {
+		sign = "-" // a minus sign only in front of something that isn't zero
+	}
+	text := sign + texts[0] // text before the first tag always stays, like "about"
+	for i := first; i < len(said); i++ {
+		text += said[i] + texts[i+1] // from there to the end, every tag and the text after it, so the smallest unit always shows, and so does text after the last tag, like "ago"
+	}
+	return text
+}
+
+// Three shortcuts sit on top of SayDuration, each with its template chosen for one use, in place of a template from the caller. They come from node, ergo's ancestor from 2013, which said time these three ways, and here each is a few lines of ergo.
+//
+// SayTimeRemaining says how long until something finishes, or how long it has run, in the units that matter at its size: two units while the larger is a single digit, like "9m 59s" and "1h 0m", and one unit after, like "10m" and "10h". It stays in hours up to 71 before it turns to days, since "71h" is plainer than "2d 23h" for something that finishes this week. SayTimeRemainingCoarse says the same, with the seconds rounded down to a multiple of 5, so a countdown on a page steps rather than flickers; the last five seconds still count down one at a time.
+//
+// SayTimeRace says how long something took to the millisecond, the way a race is timed: 5'15"223 is five minutes, fifteen seconds, and 223 milliseconds, with the minutes taking everything above them, so an hour and a quarter is 75'00"000. Its seconds and milliseconds are padded, which SayDuration never does, so it writes the three numbers itself.
+
+// SayTimeRemaining says how long remains in one or two units, like "45s", "9m 59s", "10m", "1h 0m", "10h", or "3d", for a progress bar or an estimate. It panics if span is past the integer ceiling, 2^53 - 1 either way; ask HasInt first about a number from outside.
+func SayTimeRemaining(span int64) string {
+	return sayTimeRemaining(span, false)
+}
+
+// SayTimeRemainingCoarse says how long remains like SayTimeRemaining, with the seconds rounded down to a multiple of 5, so a countdown isn't distracting. It panics if span is past the integer ceiling, 2^53 - 1 either way; ask HasInt first about a number from outside.
+func SayTimeRemainingCoarse(span int64) string {
+	return sayTimeRemaining(span, true)
+}
+
+// sayTimeRemaining says a span with the template for the units that matter at its size
+func sayTimeRemaining(span int64, coarse bool) string {
+	CheckInt(span)
+	size := span // the size picks the template; a negative span gets its minus sign from SayDuration
+	if size < 0 {
+		size = -size
+	}
+	if coarse && size > 5*Second {
+		size -= size % (5 * Second) // down to a multiple of 5 seconds, while the last five still count one at a time
+	}
+	signed := size // the size, with the sign of the span
+	if span < 0 {
+		signed = -size
+	}
+
+	switch {
+	case size < Minute:
+		return SayDuration(signed, "#s") // "0s" to "59s"
+	case size < 10*Minute:
+		return SayDuration(signed, "#m #s") // "1m 0s" to "9m 59s"
+	case size < Hour:
+		return SayDuration(signed, "#m") // "10m" to "59m"
+	case size < 10*Hour:
+		return SayDuration(signed, "#h #m") // "1h 0m" to "9h 59m"
+	case size < 3*Day:
+		return SayDuration(signed, "#h") // "10h" to "71h"
+	}
+	return SayDuration(signed, "#d") // "3d" and up
+}
+
+// SayTimeRace says how long something took to the millisecond, the way a race is timed, like 5'15"223 for five minutes, fifteen seconds, and 223 milliseconds. It panics if span is past the integer ceiling, 2^53 - 1 either way; ask HasInt first about a number from outside.
+func SayTimeRace(span int64) string {
+	CheckInt(span)
+	if span < 0 {
+		return "-" + SayTimeRace(-span) // a negative span says its size, with a minus sign in front
+	}
+	minutes := span / Minute // the minutes take everything above them
+	seconds := span % Minute / Second
+	ms := span % Second
+	// seconds and milliseconds padded, so every time reads the same way
+	return fmt.Sprintf(`%d'%02d"%03d`, minutes, seconds, ms)
+}
+
 // A tick is an integer count of milliseconds since the start of 1970, the way time.Now().UnixMilli() counts, and ergo keeps every tick between zero and the last millisecond of 9999. Two text forms carry a tick exactly. The iso form is like "2012-08-06T05:17:57.300Z": always 24 characters, always milliseconds, always Z. The short form is like "2012aug6.0517.57300": the year, month, and day, then a dot and the clock, then a dot and the milliseconds into the minute, written only as deep as the moment needs, so the start of 1990 is just "1990" and the longest text is 20 characters.
 //
 // Each form reads back to exactly the tick that wrote it, and reads nothing else. A reader accepts the text its writer produces and refuses everything else, from a missing millisecond digit to "1990feb1" where the writer would say "1990feb". The last check in each reader is the round trip itself: parse the text, write the tick, and require the same text. That's what keeps every text one to one with its tick.
@@ -74,7 +302,23 @@ const (
 
 const lastTick = 253402300799999 // the last millisecond of 9999, which keeps a year at four digits in every edition
 
-var months = []string{"jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"}
+// monthNames and dayNames are the months of the year and the days of the week, whole and in title case the way a sentence writes them, so a caller clips and then needs only strings.ToUpper or strings.ToLower for the other two cases; in english, each short name is the first three letters, like "Aug" and "Thu", which the short form and SayTick both clip out
+var monthNames = [12]string{"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"}
+var dayNames = [7]string{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"} // sunday first in every edition, the way javascript's getUTCDay and go's Weekday count from 0; python's own weekday() starts with monday, so a python caller who wants the week the other three keep has it in ergo
+
+// shortMonths is the short form's month names, clipped and lowercased once from monthNames, like "aug"
+var shortMonths = func() (short [12]string) {
+	for i, name := range monthNames {
+		short[i] = strings.ToLower(name[:3])
+	}
+	return short
+}()
+
+// MonthNames is the months of the year, whole and in title case, like "August", for a caller to clip and case. Each short name is the first three letters, like "Aug". It's a copy, so no caller can change the names under SayTick and the short form.
+func MonthNames() [12]string { return monthNames }
+
+// DayNames is the days of the week, whole and in title case, Sunday first, like time.Weekday counts. Each short name is the first three letters, like "Thu". It's a copy, so no caller can change the names under SayTick.
+func DayNames() [7]string { return dayNames }
 
 // parts of a tick in utc: the year, month 1 through 12, day 1 through 31, hour, minute, and milliseconds into the minute
 type parts struct{ y, m, d, h, i, ms int }
@@ -173,7 +417,7 @@ func TickToText(t int64) string {
 	}
 	text := strconv.Itoa(p.y)
 	if depth >= 1 {
-		text += months[p.m-1]
+		text += shortMonths[p.m-1] // the short name in lowercase, like "aug"
 	}
 	if depth >= 2 {
 		text += strconv.Itoa(p.d)
@@ -215,7 +459,7 @@ func parseText(s string) (int64, bool) {
 	}
 	p := parts{y, 1, 1, 0, 0, 0}
 	if len(p1) >= 7 {
-		p.m = slices.Index(months, p1[4:7]) + 1 // 0 if the month name isn't one of ours, which joinTick refuses
+		p.m = slices.Index(shortMonths[:], p1[4:7]) + 1 // 0 if the month name isn't one of ours, which joinTick refuses
 	}
 	if len(p1) >= 8 {
 		if p.d, ok = numerals(p1[7:]); !ok {
@@ -242,6 +486,99 @@ func parseText(s string) (int64, bool) {
 		}
 	}
 	return joinTick(p)
+}
+
+// SayTick writes a tick for a person to read, in whatever shape a template of tags describes. "Mmm D, YYYY" says a date like "Aug 6, 2026" on a page, "YYYY-MM-DD hh24:mm:ss.ttt" stamps a line in a log, and the iso form is just "YYYY-MM-DDThh24:mm:ss.tttZ". It's the one-way companion to the two forms above, which each read back exactly. This one only writes, so a template can take any shape at all.
+//
+// Uppercase tags are the calendar, and lowercase tags are the clock. YYYY is the year. M and MM are the month's number, without and with a leading zero, and MMM and MMMM are its name, short and long. D and DD are the day of the month, and DDD and DDDD are the day of the week. A name comes out in the case of its tag, so MMMM is AUGUST, Mmmm is August, and mmmm is august.
+//
+// On the clock, h12 and h24 are the hour, each saying which clock it means, and hh12 and hh24 are the same with a leading zero. mm and ss are the minute and the second, always two digits, with no form that leaves the zero off, since five past one is 1:05 and never 1:5. t, tt, and ttt are tenths, hundredths, and thousandths of a second, as many digits as letters, rounded down so 59.999 never becomes 60. AA, aa, A, and a are PM, pm, P, and p, and it's up to the template to put them beside a twelve-hour hour.
+//
+// The two cases also keep the calendar and the clock apart on the page, so in "YYYY-MM-DD hh24:mm", a lowercase mm among the calendar's capitals, or a capital MM among the clock's lowercase, stands out as the mistake it is.
+//
+// The template is read once, left to right, taking the longest tag at each position, and whatever isn't a tag is written as it is. There's no escaping, so "YYYYY" writes the year and then a Y, like "2026Y". Each value goes straight to the output and is never read again, so a value can't make a tag: the A in AUG is only a letter. Words don't belong in a template, since a single M, D, t, A, or a is a tag, and so is a doubled mm or ss. Say the date with a small template, and put what it writes into the sentence, page, or log line around it.
+//
+// A tick is an int64, so it has no fraction of a millisecond to drop, the way the editions that take a double do.
+//
+// Some things are left out on purpose. There's no reader, since the two forms above are for reading. There's no two-digit year. There are no time zones: SayTick writes the fields of the tick it's given as they fall in UTC, and works the same for a moment anywhere on earth. Keep times in UTC, and if a person should see their own wall clock, shift the tick by their offset at the very end, just before saying it. And there's no localization: the names are English, the same everywhere, and a page that wants its reader's language can hand the tick to the browser's Intl.
+
+// sayTags is every tag, each longer one before its prefixes, since alternation takes the first that matches at a position rather than the longest
+var sayTags = regexp.MustCompile(`YYYY|MMMM|Mmmm|mmmm|MMM|Mmm|mmm|MM|M|DDDD|Dddd|dddd|DDD|Ddd|ddd|DD|D|hh12|hh24|h12|h24|mm|ss|ttt|tt|t|AA|aa|A|a`)
+
+// SayTick writes tick t for a person to read, in the shape a template of tags describes, like "Mmm D, YYYY" for "Aug 6, 2026"; one way, with no reader. It panics if t isn't a tick, which is a bug in the caller; ask HasTick first about a number from outside.
+func SayTick(t int64, template string) string {
+	u := time.UnixMilli(CheckTick(t)).UTC()
+	return sayTags.ReplaceAllStringFunc(template, func(tag string) string { return sayTag(u, tag) }) // one pass over the template; each value goes to the output and is never read again
+}
+
+// sayTag is the text for one tag, from the moment in u as it falls in utc
+func sayTag(u time.Time, tag string) string {
+	hour := u.Hour()  // 0 through 23
+	half := hour % 12 // the hour on a twelve-hour clock, where midnight and noon are 12 rather than 0
+	if half == 0 {
+		half = 12
+	}
+	ms := u.Nanosecond() / 1e6 // 0 through 999
+
+	switch tag {
+	case "YYYY":
+		return strconv.Itoa(u.Year()) // always four digits, since a tick stays within 1970 through 9999
+	case "MM":
+		return fmt.Sprintf("%02d", int(u.Month()))
+	case "M":
+		return strconv.Itoa(int(u.Month()))
+	case "DD":
+		return fmt.Sprintf("%02d", u.Day())
+	case "D":
+		return strconv.Itoa(u.Day())
+	case "hh24":
+		return fmt.Sprintf("%02d", hour)
+	case "h24":
+		return strconv.Itoa(hour)
+	case "hh12":
+		return fmt.Sprintf("%02d", half)
+	case "h12":
+		return strconv.Itoa(half)
+	case "mm":
+		return fmt.Sprintf("%02d", u.Minute())
+	case "ss":
+		return fmt.Sprintf("%02d", u.Second())
+	case "ttt":
+		return fmt.Sprintf("%03d", ms)
+	case "tt":
+		return fmt.Sprintf("%02d", ms/10) // rounded down, like t
+	case "t":
+		return strconv.Itoa(ms / 100) // rounded down, so 59.99 is 59.9 and never 60.0
+	}
+
+	// the rest are words: the month's name, the weekday's name, or am and pm, each in the case of its tag
+	var word string
+	switch strings.ToLower(tag[:1]) { // m for the month, d for the weekday, a for am and pm
+	case "m":
+		word = monthNames[u.Month()-1]
+	case "d":
+		word = dayNames[u.Weekday()]
+	default:
+		word = "PM"
+		if hour < 12 {
+			word = "AM"
+		}
+	}
+	if len(tag) < 4 {
+		word = word[:len(tag)] // a shorter tag writes as many letters as it has: Aug for Mmm, P for A, and both letters of PM for AA
+	}
+	return caseLike(word, tag)
+}
+
+// caseLike writes a word in the case of the tag that asked for it: AUGUST for MMMM, August for Mmmm, and august for mmmm
+func caseLike(word, tag string) string {
+	if tag == strings.ToUpper(tag) {
+		return strings.ToUpper(word) // every letter a capital, like MMMM, AA, and A
+	}
+	if tag == strings.ToLower(tag) {
+		return strings.ToLower(word) // none, like mmmm, aa, and a
+	}
+	return word // only the first, like Mmmm, which is how the names are kept
 }
 
 // TagLength is long enough to be unique, short enough to be reasonable, and nanoid's default.

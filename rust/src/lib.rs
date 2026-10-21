@@ -4,6 +4,33 @@
 #[doc(hidden)]
 pub mod driver;
 
+// int
+
+// An integer in ergo is one every edition holds exactly: a whole number from -(2^53 - 1) through 2^53 - 1, JavaScript's safe range. Past it, a double can't tell one integer from the next, so a number that crossed from Rust or Go into a page could quietly change. has_int asks whether a value is one, and asking never panics, so a number from outside can be asked about first; check_int is the guard that enforces the same answer.
+
+/// The largest integer a double holds along with every integer below it, 2^53 - 1.
+const INT_CEILING: i64 = (1 << 53) - 1;
+
+/// True if `i` is an integer every edition holds exactly, a whole number from -(2^53 - 1) through 2^53 - 1. Never panics, so a number from outside can be asked about first.
+///
+/// ```
+/// assert!(zootella_ergo::has_int(9_007_199_254_740_991));
+/// assert!(!zootella_ergo::has_int(9_007_199_254_740_992));
+/// ```
+pub fn has_int(i: i64) -> bool {
+    (-INT_CEILING..=INT_CEILING).contains(&i)
+}
+
+/// A guard: pass an integer through, or panic because the caller handed us something that isn't one.
+///
+/// # Panics
+///
+/// Panics if `i` is past 2^53 - 1 either way, which is a bug in the caller, not an ordinary answer to handle. Ask [`has_int`] first about a number from outside.
+pub fn check_int(i: i64) -> i64 {
+    assert!(has_int(i), "not an integer: {i}");
+    i
+}
+
 // size
 
 /// Numbers of bytes in the binary units that memory and storage are measured in, 1024 to each rather than 1000, so `64 * size::KB` names what a bare 65536 would hide. Unsigned, like a file's length, because a count of bytes is never negative.
@@ -26,6 +53,8 @@ pub mod size {
 const SIZE_UNITS: [&str; 8] = [" KB", " MB", " GB", " TB", " PB", " EB", " ZB", " YB"];
 
 /// Say a count of bytes in four digits or less with a unit, like "1 byte", "2 bytes", or "117 MB". The count rounds down.
+///
+/// A u64 is never negative or a fraction, the counts the JavaScript and Python editions refuse, and past the integer ceiling this still says it right, so nothing here panics.
 ///
 /// ```
 /// assert_eq!(zootella_ergo::say_size4(1), "1 byte");
@@ -68,6 +97,283 @@ pub mod time {
     pub const MONTH: i64 = YEAR / 12;
 }
 
+// say_duration says a span of time for a person to read: how long something took, or how long ago it happened, like "2 hours 5 minutes" or "about 3 days ago". The template is the sentence it writes, with a # wherever a number goes. A tag is that #, any whitespace, and the unit after it: years, months, weeks, days, hours, minutes, or seconds, or one of the short forms yrs, yr, y, mos, mo, wks, w, d, hrs, hr, h, mins, min, m, secs, sec, and s, each written in lowercase, title case, or all capitals, like days, Days, and DAYS. Seconds can also take a fraction, #.#, #.##, or #.###, for tenths, hundredths, or thousandths, and no other unit can. Each # after the point is a digit always written, so 1.5 seconds says "1.500" under #.###, the way Excel's 0.000 writes it rather than its #.###. The whitespace can be any character Unicode calls white space: a space, a tab, or the no-break space a typographer puts there to keep "5 days" on one line.
+//
+// The units a template names split the span between them, and a template lists them from largest to smallest. The largest takes everything above it, so a year said in days is 365, and each smaller unit takes what's left. Everything rounds down, so whatever is smaller than the smallest unit goes unsaid. A year and a month are time::YEAR and time::MONTH, the averages over the leap cycle, so say_duration agrees with the rest of ergo, and a span of 365 days is a quarter of a day short of a year.
+//
+// A bare m is the one word that could be two units. On its own it's minutes, the way "5m" is in a feed, but because a template runs from largest to smallest, an m right after years, or right before weeks, days, or hours, can only be months, so "#y #m #d" says "1y 2m 3d" and "#d #h #m" says "1d 2h 3m".
+//
+// A plural, whole or short, comes out singular for exactly 1, in the case it was written in, so "# days" says "1 day" and "2 days", "# hrs" says "1 hr", and "# DAYS" says "1 DAY"; a single letter, like d, never changes.
+//
+// Units that come out zero at the start drop away, along with the text after them, so a template ready to say days can count up a task half an hour old: "#d #h #m #.##s" says "32m 55.45s", never "0d 0h 32m 55.45s". From the first unit that isn't zero, everything stays. A zero between two others stays, so a day and a second is "1 day 0 hours 0 minutes 1 second" rather than "1 day 1 second". And the smallest unit a template names is the precision it asks for, so it always shows, even on an exact amount: "#m #s" says "1m 0s" for exactly a minute. If every unit is zero, the last and smallest one says so, like "0 minutes".
+//
+// A unit only counts right after a #, so words and numbers around the tags pass through as they are: "about # days ago" says "about 3 days ago", and the d in "and" is only a letter. Only those exact spellings count, so a mix like hOURS is the tag h and then text, the way #hiring is. Whatever isn't a tag is written as it is, with no escaping and nothing refused, so a broken template writes text that's only wrong. The span is what must be right: a number of milliseconds within the integer ceiling, and anything else panics. It's an i64, so it has no fraction of a millisecond to drop, the way the editions that take a double do. A negative span says its size with a minus sign in front of everything, like "-2 hours 5 minutes", unless what it says is zero.
+//
+// The standard library has no regular expressions, so a short scanner finds the tags, trying the words in the same order the other editions do, each longer word before its prefixes, and the shared vectors hold it to the same cuts.
+
+/// Each unit's words, whole and short, with the size of the unit in milliseconds, which is also how the code tells units apart; each longer word comes before its prefixes, since the first that matches wins, and a template writes each in lowercase, title case, or all capitals.
+const DURATION_WORDS: [(&str, i64); 24] = [
+    ("years", time::YEAR),
+    ("yrs", time::YEAR),
+    ("yr", time::YEAR),
+    ("y", time::YEAR),
+    ("months", time::MONTH),
+    ("mos", time::MONTH),
+    ("mo", time::MONTH),
+    ("weeks", time::WEEK),
+    ("wks", time::WEEK),
+    ("w", time::WEEK),
+    ("days", time::DAY),
+    ("d", time::DAY),
+    ("hours", time::HOUR),
+    ("hrs", time::HOUR),
+    ("hr", time::HOUR),
+    ("h", time::HOUR),
+    ("minutes", time::MINUTE),
+    ("mins", time::MINUTE),
+    ("min", time::MINUTE),
+    ("m", time::MINUTE), // or months, by where it sits; say_duration below decides
+    ("seconds", time::SECOND),
+    ("secs", time::SECOND),
+    ("sec", time::SECOND),
+    ("s", time::SECOND),
+];
+
+/// A tag in a duration template: its unit's size, the whitespace and word it was written with, and how many digits of a second it wants.
+struct DurationTag<'a> {
+    unit: i64,
+    whitespace: &'a str,
+    word: &'a str,
+    digits: u32,
+}
+
+/// The tag a duration template has at `i`, where the text has a #, and the index just past it; None if a # there doesn't start one. A tag whose fraction comes before a unit other than seconds still comes back, so the caller can keep all of it as text.
+fn duration_tag(template: &str, i: usize) -> Option<(DurationTag<'_>, usize)> {
+    let b = template.as_bytes();
+    let mut j = i + 1; // past the #
+    let mut digits = 0; // a fraction for seconds: a point and one to three more #
+    if b.get(j) == Some(&b'.') && b.get(j + 1) == Some(&b'#') {
+        j += 1;
+        while digits < 3 && b.get(j) == Some(&b'#') {
+            digits += 1;
+            j += 1;
+        }
+    }
+    let whitespace_start = j;
+    for c in template[j..].chars().take_while(|c| c.is_whitespace()) {
+        j += c.len_utf8(); // any whitespace, which is_whitespace asks unicode about, a character at a time since most of it takes more than a byte
+    }
+    let rest = &b[j..];
+    let (word, unit) = DURATION_WORDS.iter().find(|(w, _)| spelled(rest, w))?;
+    let end = j + word.len();
+    Some((
+        DurationTag {
+            unit: *unit,
+            whitespace: &template[whitespace_start..j],
+            word: &template[j..end],
+            digits,
+        },
+        end,
+    ))
+}
+
+/// True if `rest` starts with `word` spelled exactly in lowercase, title case, or all capitals, like days, Days, or DAYS.
+fn spelled(rest: &[u8], word: &str) -> bool {
+    let w = word.as_bytes();
+    if rest.len() < w.len() {
+        return false;
+    }
+    let r = &rest[..w.len()];
+    r == w // days
+        || (r[0] == w[0].to_ascii_uppercase() && r[1..] == w[1..]) // Days
+        || r.iter().zip(w).all(|(a, b)| *a == b.to_ascii_uppercase()) // DAYS
+}
+
+/// Say a span of milliseconds in the units a template names, like "# hours # minutes" for "2 hours 5 minutes"; one way, with no reader.
+///
+/// ```
+/// use zootella_ergo::{say_duration, time};
+/// assert_eq!(say_duration(2 * time::HOUR + 5 * time::MINUTE, "# hours # minutes"), "2 hours 5 minutes");
+/// assert_eq!(say_duration(32 * time::MINUTE + 55_458, "#d #h #m #.##s"), "32m 55.45s");
+/// ```
+///
+/// # Panics
+///
+/// Panics if `span` is past the integer ceiling, 2^53 - 1 either way, which is a bug in the caller. Ask [`has_int`] first about a number from outside.
+pub fn say_duration(span: i64, template: &str) -> String {
+    let span = check_int(span);
+
+    // cut the template once, into its tags and the text around them
+    let mut texts = Vec::new(); // the text before each tag, and then the text after the last one
+    let mut tags = Vec::new();
+    let mut at = 0; // where the text not yet cut begins
+    let mut i = 0;
+    while i < template.len() {
+        if template.as_bytes()[i] != b'#' {
+            i += 1; // a # is ascii, so stepping a byte at a time never lands it inside another character
+            continue;
+        }
+        let Some((tag, end)) = duration_tag(template, i) else {
+            i += 1;
+            continue;
+        };
+        if tag.digits > 0 && tag.unit != time::SECOND {
+            i = end; // a fraction only says seconds; before any other unit, the whole match stays text, so its last # can't make a tag of its own
+            continue;
+        }
+        texts.push(&template[at..i]);
+        tags.push(tag);
+        at = end;
+        i = end;
+    }
+    texts.push(&template[at..]);
+    if tags.is_empty() {
+        return template.to_string(); // no tags, so nothing to fill in
+    }
+
+    // a bare m is minutes, unless it sits where only months fit in a template that runs from largest to smallest: right after years, or right before weeks, days, or hours
+    for i in 0..tags.len() {
+        if tags[i].word != "m" && tags[i].word != "M" {
+            continue;
+        }
+        let before = if i > 0 { tags[i - 1].unit } else { 0 }; // the unit of the tag before this one, if there is one
+        let after = tags.get(i + 1).map_or(0, |t| t.unit);
+        if before == time::YEAR || [time::WEEK, time::DAY, time::HOUR].contains(&after) {
+            tags[i].unit = time::MONTH;
+        }
+    }
+
+    // split the span among the units named, largest first, each taking all of itself that fits in what's left
+    let mut units: Vec<i64> = tags.iter().map(|t| t.unit).collect();
+    units.sort_unstable_by(|a, b| b.cmp(a));
+    units.dedup();
+    let mut counts = Vec::new();
+    let mut left = span.abs(); // milliseconds not yet said; a negative span says its size, and gets its minus sign at the end
+    for unit in units {
+        counts.push((unit, left / unit));
+        left %= unit;
+    } // left now holds the remainder that rounds away, or the fraction of a second
+
+    // write each tag, then keep everything from the first tag that isn't zero through the end
+    let said: Vec<(String, bool)> = tags
+        .iter()
+        .map(|tag| {
+            let count = counts
+                .iter()
+                .find(|(u, _)| *u == tag.unit)
+                .map_or(0, |(_, c)| *c);
+            let mut number = count.to_string();
+            let mut zero = count == 0;
+            if tag.digits > 0 {
+                let fraction = left / 10_i64.pow(3 - tag.digits); // tenths, hundredths, or thousandths of the second, rounded down
+                number += &format!(".{fraction:0width$}", width = tag.digits as usize);
+                zero = zero && fraction == 0;
+            }
+            let mut word = tag.word;
+            if number == "1" && word.len() > 1 && word.ends_with(['s', 'S']) {
+                word = &word[..word.len() - 1]; // a plural, whole or short, is singular for exactly 1, like day, hr, and DAY; the single letter s is seconds, not a plural, and never changes
+            }
+            (format!("{number}{}{word}", tag.whitespace), zero)
+        })
+        .collect();
+    let nonzero = said.iter().position(|(_, zero)| !zero); // zeros at the start drop away, along with the text after them
+    let first = nonzero.unwrap_or(said.len() - 1); // if every unit is zero, say the last and smallest, like "0 minutes"
+    let sign = if nonzero.is_some() && span < 0 {
+        "-"
+    } else {
+        ""
+    }; // a minus sign only in front of something that isn't zero
+    let mut text = format!("{sign}{}", texts[0]); // text before the first tag always stays, like "about"
+    for i in first..said.len() {
+        text += &said[i].0; // from there to the end, every tag and the text after it, so the smallest unit always shows, and so does text after the last tag, like "ago"
+        text += texts[i + 1];
+    }
+    text
+}
+
+// Three shortcuts sit on top of say_duration, each with its template chosen for one use, in place of a template from the caller. They come from node, ergo's ancestor from 2013, which said time these three ways, and here each is a few lines of ergo.
+//
+// say_time_remaining says how long until something finishes, or how long it has run, in the units that matter at its size: two units while the larger is a single digit, like "9m 59s" and "1h 0m", and one unit after, like "10m" and "10h". It stays in hours up to 71 before it turns to days, since "71h" is plainer than "2d 23h" for something that finishes this week. say_time_remaining_coarse says the same, with the seconds rounded down to a multiple of 5, so a countdown on a page steps rather than flickers; the last five seconds still count down one at a time.
+//
+// say_time_race says how long something took to the millisecond, the way a race is timed: 5'15"223 is five minutes, fifteen seconds, and 223 milliseconds, with the minutes taking everything above them, so an hour and a quarter is 75'00"000. Its seconds and milliseconds are padded, which say_duration never does, so it writes the three numbers itself.
+
+/// Say how long remains in one or two units, like "45s", "9m 59s", "10m", "1h 0m", "10h", or "3d", for a progress bar or an estimate.
+///
+/// ```
+/// use zootella_ergo::{say_time_remaining, time};
+/// assert_eq!(say_time_remaining(9 * time::MINUTE + 59 * time::SECOND), "9m 59s");
+/// assert_eq!(say_time_remaining(10 * time::MINUTE), "10m");
+/// ```
+///
+/// # Panics
+///
+/// Panics if `span` is past the integer ceiling, 2^53 - 1 either way, which is a bug in the caller. Ask [`has_int`] first about a number from outside.
+pub fn say_time_remaining(span: i64) -> String {
+    say_time_remaining_from(span, false)
+}
+
+/// Say how long remains like [`say_time_remaining`], with the seconds rounded down to a multiple of 5, so a countdown isn't distracting.
+///
+/// ```
+/// use zootella_ergo::{say_time_remaining_coarse, time};
+/// assert_eq!(say_time_remaining_coarse(37 * time::SECOND), "35s");
+/// ```
+///
+/// # Panics
+///
+/// Panics if `span` is past the integer ceiling, 2^53 - 1 either way, which is a bug in the caller. Ask [`has_int`] first about a number from outside.
+pub fn say_time_remaining_coarse(span: i64) -> String {
+    say_time_remaining_from(span, true)
+}
+
+/// Say a span with the template for the units that matter at its size.
+fn say_time_remaining_from(span: i64, coarse: bool) -> String {
+    let span = check_int(span);
+    let mut size = span.abs(); // the size picks the template; a negative span gets its minus sign from say_duration
+    if coarse && size > 5 * time::SECOND {
+        size -= size % (5 * time::SECOND); // down to a multiple of 5 seconds, while the last five still count one at a time
+    }
+    let signed = if span < 0 { -size } else { size }; // the size, with the sign of the span
+
+    if size < time::MINUTE {
+        return say_duration(signed, "#s"); // "0s" to "59s"
+    }
+    if size < 10 * time::MINUTE {
+        return say_duration(signed, "#m #s"); // "1m 0s" to "9m 59s"
+    }
+    if size < time::HOUR {
+        return say_duration(signed, "#m"); // "10m" to "59m"
+    }
+    if size < 10 * time::HOUR {
+        return say_duration(signed, "#h #m"); // "1h 0m" to "9h 59m"
+    }
+    if size < 3 * time::DAY {
+        return say_duration(signed, "#h"); // "10h" to "71h"
+    }
+    say_duration(signed, "#d") // "3d" and up
+}
+
+/// Say how long something took to the millisecond, the way a race is timed, like 5'15"223 for five minutes, fifteen seconds, and 223 milliseconds.
+///
+/// ```
+/// use zootella_ergo::{say_time_race, time};
+/// assert_eq!(say_time_race(5 * time::MINUTE + 15 * time::SECOND + 223), "5'15\"223");
+/// ```
+///
+/// # Panics
+///
+/// Panics if `span` is past the integer ceiling, 2^53 - 1 either way, which is a bug in the caller. Ask [`has_int`] first about a number from outside.
+pub fn say_time_race(span: i64) -> String {
+    let span = check_int(span);
+    if span < 0 {
+        return format!("-{}", say_time_race(-span)); // a negative span says its size, with a minus sign in front
+    }
+    let minutes = span / time::MINUTE; // the minutes take everything above them
+    let seconds = span % time::MINUTE / time::SECOND;
+    let ms = span % time::SECOND;
+    format!("{minutes}'{seconds:02}\"{ms:03}") // seconds and milliseconds padded, so every time reads the same way
+}
+
 // tick
 
 // A tick is an integer count of milliseconds since the start of 1970, and ergo keeps every tick between zero and the last millisecond of 9999. Two text forms carry a tick exactly. The iso form is like "2012-08-06T05:17:57.300Z": always 24 characters, always milliseconds, always Z. The short form is like "2012aug6.0517.57300": the year, month, and day, then a dot and the clock, then a dot and the milliseconds into the minute, written only as deep as the moment needs, so the start of 1990 is just "1990" and the longest text is 20 characters.
@@ -80,8 +386,32 @@ pub mod time {
 
 /// The last millisecond of 9999, which keeps a year at four digits in every edition.
 const LAST_TICK: i64 = 253_402_300_799_999;
-const MONTHS: [&str; 12] = [
-    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+
+/// The months of the year, whole and in title case the way a sentence writes them, so a caller clips and then needs only `to_uppercase` or `to_lowercase` for the other two cases. In English, each short name is the first three letters, like "Aug", which the short form and [`say_tick`] both clip out.
+pub const MONTH_NAMES: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// The days of the week, whole and in title case, with each short name the first three letters, like "Thu". Sunday is first in every edition, the way JavaScript's getUTCDay and Go's Weekday count from 0; Python's own weekday() starts with Monday, so a Python caller who wants the week the other three keep has it in ergo.
+pub const DAY_NAMES: [&str; 7] = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
 ];
 
 /// Text a reader refused, because it isn't exactly what a writer produces. Carries the text so a log can show it.
@@ -282,7 +612,12 @@ pub fn tick_to_text(t: i64) -> String {
     }
     let mut text = p.y.to_string();
     if depth >= 1 {
-        text += MONTHS[p.m as usize - 1];
+        // the short name in lowercase, like "aug", clipped in place
+        text.extend(
+            MONTH_NAMES[p.m as usize - 1][..3]
+                .chars()
+                .map(|c| c.to_ascii_lowercase()),
+        );
     }
     if depth >= 2 {
         text += &p.d.to_string();
@@ -333,7 +668,14 @@ fn parse_text(s: &str) -> Option<i64> {
         ms: 0,
     };
     if p1.len() >= 7 {
-        p.m = MONTHS.iter().position(|&name| name == &p1[4..7])? as u32 + 1;
+        let short = &p1.as_bytes()[4..7];
+        p.m = MONTH_NAMES.iter().position(|name| {
+            name.as_bytes()[..3]
+                .iter()
+                .map(u8::to_ascii_lowercase)
+                .eq(short.iter().copied()) // the short name in lowercase, compared in place
+        })? as u32
+            + 1;
     }
     if p1.len() >= 8 {
         p.d = numerals(&p1[7..])?;
@@ -352,6 +694,113 @@ fn parse_text(s: &str) -> Option<i64> {
         p.ms = numerals(parts[2])?;
     }
     join_tick(&p)
+}
+
+// say_tick writes a tick for a person to read, in whatever shape a template of tags describes. "Mmm D, YYYY" says a date like "Aug 6, 2026" on a page, "YYYY-MM-DD hh24:mm:ss.ttt" stamps a line in a log, and the iso form is just "YYYY-MM-DDThh24:mm:ss.tttZ". It's the one-way companion to the two forms above, which each read back exactly. This one only writes, so a template can take any shape at all.
+//
+// Uppercase tags are the calendar, and lowercase tags are the clock. YYYY is the year. M and MM are the month's number, without and with a leading zero, and MMM and MMMM are its name, short and long. D and DD are the day of the month, and DDD and DDDD are the day of the week. A name comes out in the case of its tag, so MMMM is AUGUST, Mmmm is August, and mmmm is august.
+//
+// On the clock, h12 and h24 are the hour, each saying which clock it means, and hh12 and hh24 are the same with a leading zero. mm and ss are the minute and the second, always two digits, with no form that leaves the zero off, since five past one is 1:05 and never 1:5. t, tt, and ttt are tenths, hundredths, and thousandths of a second, as many digits as letters, rounded down so 59.999 never becomes 60. AA, aa, A, and a are PM, pm, P, and p, and it's up to the template to put them beside a twelve-hour hour.
+//
+// The two cases also keep the calendar and the clock apart on the page, so in "YYYY-MM-DD hh24:mm", a lowercase mm among the calendar's capitals, or a capital MM among the clock's lowercase, stands out as the mistake it is.
+//
+// The template is read once, left to right, taking the longest tag at each position, and whatever isn't a tag is written as it is. There's no escaping, so "YYYYY" writes the year and then a Y, like "2026Y". Each value goes straight to the output and is never read again, so a value can't make a tag: the A in AUG is only a letter. Words don't belong in a template, since a single M, D, t, A, or a is a tag, and so is a doubled mm or ss. Say the date with a small template, and put what it writes into the sentence, page, or log line around it.
+//
+// A tick is an i64, so it has no fraction of a millisecond to drop, the way the editions that take a double do.
+//
+// Some things are left out on purpose. There's no reader, since the two forms above are for reading. There's no two-digit year. There are no time zones: say_tick writes the fields of the tick it's given as they fall in UTC, and works the same for a moment anywhere on earth. Keep times in UTC, and if a person should see their own wall clock, shift the tick by their offset at the very end, just before saying it. And there's no localization: the names are English, the same everywhere, and a page that wants its reader's language can hand the tick to the browser's Intl.
+
+/// Every tag, each longer one before its prefixes, since the first that matches at a position wins rather than the longest.
+const SAY_TAGS: [&str; 30] = [
+    "YYYY", "MMMM", "Mmmm", "mmmm", "MMM", "Mmm", "mmm", "MM", "M", "DDDD", "Dddd", "dddd", "DDD",
+    "Ddd", "ddd", "DD", "D", "hh12", "hh24", "h12", "h24", "mm", "ss", "ttt", "tt", "t", "AA",
+    "aa", "A", "a",
+];
+
+/// Write tick `t` for a person to read, in the shape a template of tags describes, like "Mmm D, YYYY" for "Aug 6, 2026"; one way, with no reader.
+///
+/// ```
+/// use zootella_ergo::say_tick;
+/// assert_eq!(say_tick(1_344_230_277_300, "Dddd, Mmmm D, YYYY"), "Monday, August 6, 2012");
+/// assert_eq!(say_tick(1_344_230_277_300, "YYYY-MM-DD hh24:mm:ss.ttt"), "2012-08-06 05:17:57.300");
+/// ```
+///
+/// # Panics
+///
+/// Panics if `t` isn't a tick, which is a bug in the caller: a tick is zero through the last millisecond of 9999. Ask [`has_tick`] first about a number from outside.
+pub fn say_tick(t: i64, template: &str) -> String {
+    let p = split_tick(t);
+    let weekday = ((t / time::DAY + 4) % 7) as usize; // days since 1970, which began on a thursday, counted from sunday, 0
+    let mut text = String::new();
+    let mut rest = template;
+    while let Some(c) = rest.chars().next() {
+        match SAY_TAGS.iter().find(|tag| rest.starts_with(*tag)) {
+            Some(tag) => {
+                text += &say_tag(&p, weekday, tag); // one pass over the template; each value goes to the output and is never read again
+                rest = &rest[tag.len()..];
+            }
+            None => {
+                text.push(c); // not a tag, so written as it is
+                rest = &rest[c.len_utf8()..];
+            }
+        }
+    }
+    text
+}
+
+/// The text for one tag, from the utc parts of a tick and its day of the week.
+fn say_tag(p: &Parts, weekday: usize, tag: &str) -> String {
+    let hour = p.h; // 0 through 23
+    let half = if hour % 12 == 0 { 12 } else { hour % 12 }; // the hour on a twelve-hour clock, where midnight and noon are 12 rather than 0
+    let ms = p.ms % 1000; // 0 through 999
+    match tag {
+        "YYYY" => return p.y.to_string(), // always four digits, since a tick stays within 1970 through 9999
+        "MM" => return format!("{:02}", p.m),
+        "M" => return p.m.to_string(),
+        "DD" => return format!("{:02}", p.d),
+        "D" => return p.d.to_string(),
+        "hh24" => return format!("{hour:02}"),
+        "h24" => return hour.to_string(),
+        "hh12" => return format!("{half:02}"),
+        "h12" => return half.to_string(),
+        "mm" => return format!("{:02}", p.i),
+        "ss" => return format!("{:02}", p.ms / 1000),
+        "ttt" => return format!("{ms:03}"),
+        "tt" => return format!("{:02}", ms / 10), // rounded down, like t
+        "t" => return (ms / 100).to_string(),     // rounded down, so 59.99 is 59.9 and never 60.0
+        _ => {}
+    }
+
+    // the rest are words: the month's name, the weekday's name, or am and pm, each in the case of its tag
+    let word = match tag.as_bytes()[0].to_ascii_lowercase() {
+        b'm' => MONTH_NAMES[p.m as usize - 1],
+        b'd' => DAY_NAMES[weekday],
+        _ => {
+            if hour < 12 {
+                "AM"
+            } else {
+                "PM"
+            }
+        }
+    };
+    // a shorter tag writes as many letters as it has: Aug for Mmm, P for A, and both letters of PM for AA
+    let word = if tag.len() < 4 {
+        &word[..tag.len()]
+    } else {
+        word
+    };
+    case_like(word, tag)
+}
+
+/// Write a word in the case of the tag that asked for it: AUGUST for MMMM, August for Mmmm, and august for mmmm.
+fn case_like(word: &str, tag: &str) -> String {
+    if tag == tag.to_uppercase() {
+        return word.to_uppercase(); // every letter a capital, like MMMM, AA, and A
+    }
+    if tag == tag.to_lowercase() {
+        return word.to_lowercase(); // none, like mmmm, aa, and a
+    }
+    word.to_string() // only the first, like Mmmm, which is how the names are kept
 }
 
 // tag

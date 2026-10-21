@@ -9,6 +9,8 @@ pub fn dispatch(call: &str, args: &[Value]) -> Result<Value, String> {
 
 fn run(call: &str, args: &[Value]) -> Result<Value, String> {
     match call {
+        "hasInt" => Ok(json!(crate::has_int(integer(args, 0)?))),
+        "checkInt" => Ok(json!(crate::check_int(integer(args, 0)?))),
         "Size.b" => Ok(json!(crate::size::B)),
         "Size.kb" => Ok(json!(crate::size::KB)),
         "Size.mb" => Ok(json!(crate::size::MB)),
@@ -24,12 +26,22 @@ fn run(call: &str, args: &[Value]) -> Result<Value, String> {
         "Time.week" => Ok(json!(crate::time::WEEK)),
         "Time.year" => Ok(json!(crate::time::YEAR)),
         "Time.month" => Ok(json!(crate::time::MONTH)),
+        "sayDuration" => Ok(json!(crate::say_duration(
+            integer(args, 0)?,
+            text(args, 1)?
+        ))),
+        "sayTimeRemaining" => Ok(json!(crate::say_time_remaining(integer(args, 0)?))),
+        "sayTimeRemainingCoarse" => Ok(json!(crate::say_time_remaining_coarse(integer(args, 0)?))),
+        "sayTimeRace" => Ok(json!(crate::say_time_race(integer(args, 0)?))),
         "hasTick" => Ok(json!(crate::has_tick(integer(args, 0)?))),
         "checkTick" => Ok(json!(crate::check_tick(integer(args, 0)?))),
         "tickToText" => Ok(json!(crate::tick_to_text(integer(args, 0)?))),
         "textToTick" => refused(crate::text_to_tick(text(args, 0)?)),
         "tickToIso" => Ok(json!(crate::tick_to_iso(integer(args, 0)?))),
         "isoToTick" => refused(crate::iso_to_tick(text(args, 0)?)),
+        "monthNames" => Ok(json!(crate::MONTH_NAMES)),
+        "dayNames" => Ok(json!(crate::DAY_NAMES)),
+        "sayTick" => Ok(json!(crate::say_tick(integer(args, 0)?, text(args, 1)?))),
         "tagLength" => Ok(json!(crate::TAG_LENGTH)),
         "Tag" => Ok(json!(crate::tag())),
         "hasTag" => Ok(json!(crate::has_tag(text(args, 0)?))),

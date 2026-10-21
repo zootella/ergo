@@ -5,6 +5,27 @@ import { sha1 as nobleSha1 } from '@noble/hashes/legacy.js'
 import { sha256 as nobleSha256 } from '@noble/hashes/sha2.js'
 import { blake3 as nobleBlake3 } from '@noble/hashes/blake3.js'
 
+//  _       _
+// (_)_ __ | |_
+// | | '_ \| __|
+// | | | | | |_
+// |_|_| |_|\__|
+//
+
+/*
+An integer in ergo is one every edition holds exactly: a whole number from -(2^53 - 1) through 2^53 - 1, JavaScript's safe range. Past it, a double can't tell one integer from the next, so a number that crossed from Rust or Go into a page could quietly change. hasInt asks whether a value is one, and asking never throws, so a number from outside can be asked about first; checkInt is the guard that enforces the same answer.
+*/
+
+//true if i is an integer every edition holds exactly, a whole number from -(2^53 - 1) through 2^53 - 1; never throws, so a number from outside can be asked about first
+export function hasInt(i) {
+  return Number.isSafeInteger(i)
+}
+//a guard: pass an integer through, or throw because the caller handed us something that isn't one
+export function checkInt(i) {
+  if (!hasInt(i)) throw new Error(`not an integer: ${i}`)
+  return i
+}
+
 //      _
 //  ___(_)_______
 // / __| |_  / _ \
@@ -26,8 +47,9 @@ export const Size = /*#__PURE__*/ Object.freeze({
 //each 1024 of the one before, labeled the everyday way; bytes come before these, and are the one unit that pluralizes
 const sizeUnits = [' KB', ' MB', ' GB', ' TB', ' PB', ' EB', ' ZB', ' YB']
 
-//say a count of bytes in four digits or less with a unit, like "1 byte", "2 bytes", or "117 MB"; n is zero or more, and the count rounds down
+//say a count of bytes in four digits or less with a unit, like "1 byte", "2 bytes", or "117 MB"; n is a count, a whole number zero or more within the integer ceiling, and anything else throws, so ask hasInt(n) && n >= 0 first about a number from outside; the count rounds down
 export function saySize4(n) {
+  _checkCount(n) //a fraction of a byte, or a negative count, is a bug in the caller, which should have made it whole
   if (n <= 9999) return `${n} byte${n == 1 ? '' : 's'}` //at most four digits of bytes, so say bytes; singular only for exactly one
   let w = n //whole units of the unit we're counting in
   for (let unit of sizeUnits) {
@@ -57,7 +79,7 @@ export const Time = /*#__PURE__*/ Object.freeze({
 })
 
 /*
-sayDuration says a span of time for a person to read: how long something took, or how long ago it happened, like "2 hours 5 minutes" or "about 3 days ago". The template is the sentence it writes, with a # wherever a number goes. A tag is that #, any spaces, and the unit after it: years, months, weeks, days, hours, minutes, or seconds, or one of the short forms yrs, yr, y, mos, mo, wks, w, d, hrs, hr, h, mins, min, m, secs, sec, and s, written in any case. Seconds can also take a fraction, #.#, #.##, or #.###, for tenths, hundredths, or thousandths, and no other unit can. Each # after the point is a digit always written, so 1.5 seconds says "1.500" under #.###, the way Excel's 0.000 writes it rather than its #.###.
+sayDuration says a span of time for a person to read: how long something took, or how long ago it happened, like "2 hours 5 minutes" or "about 3 days ago". The template is the sentence it writes, with a # wherever a number goes. A tag is that #, any whitespace, and the unit after it: years, months, weeks, days, hours, minutes, or seconds, or one of the short forms yrs, yr, y, mos, mo, wks, w, d, hrs, hr, h, mins, min, m, secs, sec, and s, each written in lowercase, title case, or all capitals, like days, Days, and DAYS. Seconds can also take a fraction, #.#, #.##, or #.###, for tenths, hundredths, or thousandths, and no other unit can. Each # after the point is a digit always written, so 1.5 seconds says "1.500" under #.###, the way Excel's 0.000 writes it rather than its #.###. The whitespace can be any character Unicode calls white space: a space, a tab, or the no-break space a typographer puts there to keep "5 days" on one line.
 
 The units a template names split the span between them, and a template lists them from largest to smallest. The largest takes everything above it, so a year said in days is 365, and each smaller unit takes what's left. Everything rounds down, so whatever is smaller than the smallest unit goes unsaid. A year and a month are Time.year and Time.month, the averages over the leap cycle, so sayDuration agrees with the rest of ergo, and a span of 365 days is a quarter of a day short of a year.
 
@@ -67,10 +89,10 @@ A plural, whole or short, comes out singular for exactly 1, in the case it was w
 
 Units that come out zero at the start drop away, along with the text after them, so a template ready to say days can count up a task half an hour old: "#d #h #m #.##s" says "32m 55.45s", never "0d 0h 32m 55.45s". From the first unit that isn't zero, everything stays. A zero between two others stays, so a day and a second is "1 day 0 hours 0 minutes 1 second" rather than "1 day 1 second". And the smallest unit a template names is the precision it asks for, so it always shows, even on an exact amount: "#m #s" says "1m 0s" for exactly a minute. If every unit is zero, the last and smallest one says so, like "0 minutes".
 
-A unit only counts right after a #, so words and numbers around the tags pass through as they are: "about # days ago" says "about 3 days ago", and the d in "and" is only a letter. Whatever isn't a tag is written as it is, with no escaping and nothing refused, so a broken template writes text that's only wrong. The span is what must be right: a whole number of milliseconds within the integer ceiling, and anything else throws. A negative span says its size with a minus sign in front of everything, like "-2 hours 5 minutes", unless what it says is zero.
+A unit only counts right after a #, so words and numbers around the tags pass through as they are: "about # days ago" says "about 3 days ago", and the d in "and" is only a letter. Only those exact spellings count, so a mix like hOURS is the tag h and then text, the way #hiring is. Whatever isn't a tag is written as it is, with no escaping and nothing refused, so a broken template writes text that's only wrong. The span is what must be right: a number of milliseconds within the integer ceiling, and anything else throws. A fraction of a millisecond, like the one performance.now() carries, drops away toward zero, so the sign stays with the size; nothing reads this text back, so there's no exactness to keep. That means the say functions take a number like 1.5 that hasInt refuses, since an integer to carry has no fraction; to ask first about a span that might have one, ask hasInt about Math.trunc of it. A negative span says its size with a minus sign in front of everything, like "-2 hours 5 minutes", unless what it says is zero.
 */
 
-//each word a tag can end with, whole or short, in lowercase, to the name of its unit in Time
+//each unit's words, whole and short, to the name of the unit in Time, each longer word before its prefixes, since the first that matches wins; a template writes each in lowercase, title case, or all capitals
 const durationUnits = {
   years: 'year',
   yrs: 'year',
@@ -97,37 +119,38 @@ const durationUnits = {
   sec: 'second',
   s: 'second',
 }
-const durationTags =
-  /#(\.#{1,3})?( *)(years|yrs|yr|y|months|mos|mo|weeks|wks|w|days|d|hours|hrs|hr|h|minutes|mins|min|m|seconds|secs|sec|s)/gi //a #, a fraction for seconds, any spaces, and the unit's word, each longer word before its prefixes; blind to case, so the unit can be written in any case
+const durationTags = /#(\.#{1,3})?(\p{White_Space}*)([A-Za-z]*)/gu //a #, a fraction for seconds, any whitespace, and the run of english letters after them, where sayDuration looks for a unit's word; \p{White_Space} is unicode's own list, which \s misses by two characters
 
 //say a span of milliseconds in the units a template names, like "# hours # minutes" for "2 hours 5 minutes"; one way, with no reader
 export function sayDuration(span, template) {
-  _checkSpan(span)
+  span = _wholeSpan(span)
   _checkTemplate(template)
 
   //cut the template once, into its tags and the text around them
   let texts = [] //the text before each tag, and then the text after the last one
-  let tags = [] //each tag's unit, the spaces and word it was written with, and how many digits of a second it wants
+  let tags = [] //each tag's unit, the whitespace and word it was written with, and how many digits of a second it wants
   let at = 0 //where the text not yet cut begins
   for (let match of template.matchAll(durationTags)) {
-    let [all, fraction, spaces, word] = match
-    let unit = durationUnits[word.toLowerCase()]
+    let [all, fraction, whitespace, letters] = match
+    let found = _durationWord(letters)
+    if (!found) continue //no unit's spelling starts the letters, so the # is only text
+    let { word, unit } = found
     if (fraction && unit != 'second') continue //a fraction only says seconds; before any other unit, the whole match stays text, so its last # can't make a tag of its own
     texts.push(template.slice(at, match.index))
     tags.push({
       unit,
-      spaces,
+      whitespace,
       word,
       digits: fraction ? fraction.length - 1 : 0,
     })
-    at = match.index + all.length
+    at = match.index + all.length - letters.length + word.length //just past the unit's word, so any letters after it stay text, like the "iring" of "#hiring"
   }
   texts.push(template.slice(at))
   if (tags.length == 0) return template //no tags, so nothing to fill in
 
   //a bare m is minutes, unless it sits where only months fit in a template that runs from largest to smallest: right after years, or right before weeks, days, or hours
   for (let i = 0; i < tags.length; i++) {
-    if (tags[i].word.toLowerCase() != 'm') continue
+    if (tags[i].word != 'm' && tags[i].word != 'M') continue
     let before = tags[i - 1]?.unit //the unit of the tag before this one, if there is one
     let after = tags[i + 1]?.unit
     if (
@@ -160,7 +183,7 @@ export function sayDuration(span, template) {
     let word = tag.word
     if (number == '1' && word.length > 1 && /s$/i.test(word))
       word = word.slice(0, -1) //a plural, whole or short, is singular for exactly 1, like day, hr, and DAY; the single letter s is seconds, not a plural, and never changes
-    return { text: number + tag.spaces + word, zero: Number(number) == 0 }
+    return { text: number + tag.whitespace + word, zero: Number(number) == 0 }
   })
   let first = said.findIndex((tag) => !tag.zero) //zeros at the start drop away, along with the text after them
   let sign = ''
@@ -171,11 +194,21 @@ export function sayDuration(span, template) {
   for (let i = first; i < said.length; i++) text += said[i].text + texts[i + 1] //from there to the end, every tag and the text after it, so the smallest unit always shows, and so does text after the last tag, like "ago"
   return sign + text
 }
-//a guard: pass a span through, or throw because it isn't a whole number of milliseconds within the integer ceiling
-function _checkSpan(span) {
-  if (!Number.isSafeInteger(span))
+//the unit a run of letters starts with and the word as written, spelled exactly in lowercase, title case, or all capitals, like days, Days, or DAYS, trying each longer word before its prefixes; or false
+function _durationWord(letters) {
+  for (let [word, unit] of Object.entries(durationUnits)) {
+    let title = word[0].toUpperCase() + word.slice(1)
+    for (let spelling of [word, title, word.toUpperCase()])
+      if (letters.startsWith(spelling)) return { word: spelling, unit }
+  }
+  return false
+}
+//the whole milliseconds of a span a say function was handed, its fraction dropped toward zero so the sign stays with the size, or throw because it isn't a number within the integer ceiling; so a say function takes 1.5, which hasInt refuses, and hasInt(Math.trunc(span)) is the question to ask first
+function _wholeSpan(span) {
+  let whole = Math.trunc(span) //Math.trunc turns text or a boolean into a number, so the typeof check below is what refuses those
+  if (typeof span != 'number' || !hasInt(whole))
     throw new Error(`not a span of milliseconds: ${span}`)
-  return span
+  return whole
 }
 //a guard: pass a template through, or throw because it isn't text; sayDuration and sayTick refuse nothing else about one
 function _checkTemplate(template) {
@@ -189,7 +222,7 @@ Three shortcuts sit on top of sayDuration, each with its template chosen for one
 
 sayTimeRemaining says how long until something finishes, or how long it has run, in the units that matter at its size: two units while the larger is a single digit, like "9m 59s" and "1h 0m", and one unit after, like "10m" and "10h". It stays in hours up to 71 before it turns to days, since "71h" is plainer than "2d 23h" for something that finishes this week. sayTimeRemainingCoarse says the same, with the seconds rounded down to a multiple of 5, so a countdown on a page steps rather than flickers; the last five seconds still count down one at a time.
 
-sayTimeRace says how long something took to the millisecond, the way a race is timed: 5'15"223 is five minutes, fifteen seconds, and 223 milliseconds, with the minutes taking everything above them, so an hour and a quarter is 75'00"000. Its seconds and milliseconds are padded, which sayDuration never does, so it asks sayTick for them instead.
+sayTimeRace says how long something took to the millisecond, the way a race is timed: 5'15"223 is five minutes, fifteen seconds, and 223 milliseconds, with the minutes taking everything above them, so an hour and a quarter is 75'00"000. Its seconds and milliseconds are padded, which sayDuration never does, so it writes the three numbers itself.
 */
 
 //say how long remains in one or two units, like "45s", "9m 59s", "10m", "1h 0m", "10h", or "3d", for a progress bar or an estimate
@@ -200,8 +233,10 @@ export function sayTimeRemaining(span) {
 export function sayTimeRemainingCoarse(span) {
   return _sayTimeRemaining(span, true)
 }
+//say a span with the template for the units that matter at its size
 function _sayTimeRemaining(span, coarse) {
-  let size = Math.abs(_checkSpan(span)) //the size picks the template; a negative span gets its minus sign from sayDuration
+  span = _wholeSpan(span)
+  let size = Math.abs(span) //the size picks the template; a negative span gets its minus sign from sayDuration
   if (coarse && size > 5 * Time.second) size -= size % (5 * Time.second) //down to a multiple of 5 seconds, while the last five still count one at a time
   let signed = size //the size, with the sign of the span
   if (span < 0) signed = -size
@@ -216,10 +251,12 @@ function _sayTimeRemaining(span, coarse) {
 
 //say how long something took to the millisecond, the way a race is timed, like 5'15"223 for five minutes, fifteen seconds, and 223 milliseconds
 export function sayTimeRace(span) {
-  _checkSpan(span)
+  span = _wholeSpan(span)
   if (span < 0) return '-' + sayTimeRace(-span) //a negative span says its size, with a minus sign in front
   let minutes = Math.floor(span / Time.minute) //the minutes take everything above them
-  return minutes + "'" + sayTick(span - minutes * Time.minute, 'ss"ttt') //the rest of the minute is a tick in the first minute of 1970, so sayTick pads its seconds and milliseconds
+  let seconds = Math.floor((span % Time.minute) / Time.second)
+  let ms = span % Time.second
+  return `${minutes}'${String(seconds).padStart(2, '0')}"${String(ms).padStart(3, '0')}` //seconds and milliseconds padded, so every time reads the same way
 }
 
 //  _   _      _
@@ -380,6 +417,8 @@ The two cases also keep the calendar and the clock apart on the page, so in "YYY
 
 The template is read once, left to right, taking the longest tag at each position, and whatever isn't a tag is written as it is. There's no escaping, so "YYYYY" writes the year and then a Y, like "2026Y". Each value goes straight to the output and is never read again, so a value can't make a tag: the A in AUG is only a letter. Words don't belong in a template, since a single M, D, t, A, or a is a tag, and so is a doubled mm or ss. Say the date with a small template, and put what it writes into the sentence, page, or log line around it.
 
+A fraction of a millisecond, like the one performance.timeOrigin + performance.now() carries, drops away, down to the millisecond the moment falls in; nothing reads this text back, so there's no exactness to keep. That means sayTick takes a number like 1.5 that hasTick refuses, since a tick is a whole number; to ask first about one that might have a fraction, ask hasTick about Math.floor of it.
+
 Some things are left out on purpose. There's no reader, since the two forms above are for reading. There's no two-digit year. There are no time zones: sayTick writes the fields of the tick it's given as they fall in UTC, and works the same for a moment anywhere on earth. Keep times in UTC, and if a person should see their own wall clock, shift the tick by their offset at the very end, just before saying it. And there's no localization: the names are English, the same everywhere, and a page that wants its reader's language can hand the tick to the browser's Intl.
 */
 
@@ -388,9 +427,16 @@ const sayTags =
 
 //write tick t for a person to read, in the shape a template of tags describes, like "Mmm D, YYYY" for "Aug 6, 2026"; one way, with no reader
 export function sayTick(t, template) {
-  let d = new Date(checkTick(t))
+  let d = new Date(_wholeTick(t))
   _checkTemplate(template)
   return template.replace(sayTags, (tag) => _sayTag(d, tag)) //one pass over the template; each value goes to the output and is never read again
+}
+//the whole millisecond a say function was handed, its fraction dropped down to the millisecond the moment falls in, or throw because that isn't a tick; so sayTick takes 1.5, which hasTick refuses, and hasTick(Math.floor(t)) is the question to ask first
+function _wholeTick(t) {
+  let whole = Math.floor(t)
+  if (typeof t != 'number' || !hasTick(whole))
+    throw new Error(`not a tick: ${t}`)
+  return whole
 }
 //the text for one tag, from the moment in d as it falls in utc
 function _sayTag(d, tag) {

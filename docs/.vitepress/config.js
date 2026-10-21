@@ -12,11 +12,12 @@ export default defineConfig({
     },
   },
   themeConfig: {
-    nav: [{ text: 'Functions', link: '/size' }],
+    nav: [{ text: 'Functions', link: '/int' }],
     sidebar: [
       {
         text: 'Functions',
         items: [
+          { text: 'Int', link: '/int' },
           { text: 'Size', link: '/size' },
           { text: 'Time', link: '/time' },
           { text: 'Tick', link: '/tick' },
