@@ -759,6 +759,8 @@ def check_tag(s: str) -> str:
 # Each form is exact, both ways. Every reader ends by writing the bytes back out and requiring the text it read, so it accepts only what its writer produces: base16 in lowercase, base32 without padding, base64 with it, nothing extra and nothing missing. Text becomes UTF-8 in Unicode Normalization Form C, so the same characters typed two ways become the same bytes, and reading bytes as text refuses bytes that aren't UTF-8, or aren't in that form, rather than guess.
 #
 # clip_view looks at part of a Data without copying it, which is fast, and right whenever the bytes beneath won't change. clip_copy copies them out, for when they could. array hands over the bytes as Python's own immutable bytes, which copies them unless the Data already holds exactly a bytes object.
+#
+# A Data can hold no bytes at all: the empty input every hash has a standard answer for, the bytes of blank text, a clip of nothing, an empty Bin. The Data in icarus, the code ergo grew from, refused nearly every way to be empty: blank text, blank encodings, zero random bytes, and a clip of nothing, and its Bin refused a capacity of zero. Only an empty array or buffer, or a Bin's data before anything was added, made an empty one there. So code built on it came to take a Data as at least one byte, and checked integrity that way. That code doesn't move to ergo's Data unchanged. Before it switches, find each place that leaned on a Data never being empty, and have it ask for itself, with size() > 0.
 
 
 class Data:

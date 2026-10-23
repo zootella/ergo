@@ -866,6 +866,8 @@ pub fn check_tag(s: &str) -> &str {
 //
 // clip_view looks at part of a Data without copying it. clip_copy copies the part out, into bytes of its own.
 //
+// A Data can hold no bytes at all: the empty input every hash has a standard answer for, the bytes of blank text, a clip of nothing, an empty Bin. The Data in icarus, the code ergo grew from, refused nearly every way to be empty: blank text, blank encodings, zero random bytes, and a clip of nothing, and its Bin refused a capacity of zero. Only an empty array or buffer, or a Bin's data before anything was added, made an empty one there. So code built on it came to take a Data as at least one byte, and checked integrity that way. That code doesn't move to ergo's Data unchanged. Before it switches, find each place that leaned on a Data never being empty, and have it ask for itself, with size() > 0.
+//
 // The standard library has no base16, base32, or base64, so the few lines of each are here, beside base62, which is ergo's own; the shared vectors pin all four against the other editions, whose platforms have the first three.
 
 /// Bytes, made from exactly one form, like `Data::from_text("hello")` or `Data::from_base16("68656c6c6f")`, and read out as any: array, text, base16, base32, base62, or base64.

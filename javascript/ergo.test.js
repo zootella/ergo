@@ -525,6 +525,105 @@ describe('Data', () => {
     expect(Data({ array: a1 }).text()).toBe('DEF') //and a Data looks at any of them the same way
     expect(Data({ buffer: b4 }).text()).toBe('DEF')
   })
+
+  //the tests below pin what a Data is as a javascript object, which the shared vectors can't see, since json carries values and not memory
+  test('looks at the array or buffer it was given without copying, and clipView looks where clipCopy copies', () => {
+    let a = new Uint8Array([0x41, 0x42, 0x43, 0x44, 0x45, 0x46]) //ABCDEF
+    let d = Data({ array: a })
+    expect(d.array()).toBe(a) //the very array it was given
+    let view = d.clipView(1, 5) //BCDE, looking at a
+    let copy = d.clipCopy(1, 5) //BCDE, in bytes of its own
+    let inner = view.clipView(1, 3) //CD, since a clip of a clip counts from the clip
+    expect(inner.base16()).toBe('4344')
+
+    a[2] = 0x63 //change the C beneath all of them to c
+    expect(d.get(2)).toBe(0x63)
+    expect(view.get(1)).toBe(0x63) //a view sees the change
+    expect(inner.get(0)).toBe(0x63) //and so does a view of a view
+    expect(copy.get(1)).toBe(0x43) //a copy doesn't
+    inner.array()[1] = 0x64 //and a write through a view reaches the bytes beneath
+    expect(a[3]).toBe(0x64)
+
+    let buffer = new ArrayBuffer(3)
+    let b = Data({ buffer }) //a Data over all of a buffer, also without copying
+    new Uint8Array(buffer).set([0x78, 0x79, 0x7a])
+    expect(b.text()).toBe('xyz')
+    expect(b.array().buffer).toBe(buffer)
+  })
+  test('works out each form once and keeps it, and keeps the form it was made from as given', () => {
+    let a = new Uint8Array([0x61, 0x62, 0x63]) //abc
+    let d = Data({ array: a })
+    expect(d.base16()).toBe('616263') //worked out on first ask, and kept
+    a[0] = 0x7a //change the a beneath it to z
+    expect(d.get(0)).toBe(0x7a) //the bytes are what they are now
+    expect(d.base16()).toBe('616263') //but a form already written stays as it was
+    expect(d.text()).toBe('zbc') //and a form not yet asked for is written from the bytes as they are now
+    expect(d.base62()).toBe(Data({ text: 'zbc' }).base62())
+
+    let t = Data({ text: 'abc' })
+    t.array()[0] = 0x7a
+    expect(t.text()).toBe('abc') //the text it was made from, kept as given
+    expect(t.base16()).toBe('7a6263') //while the other forms follow the bytes
+    let s = Data({ base16: '616263' })
+    s.array()[0] = 0x7a
+    expect(s.base16()).toBe('616263') //the same for a form it was read from
+    expect(s.text()).toBe('zbc')
+  })
+  test('made from several forms at once, takes the first in a fixed order', () => {
+    //one byte in each form, each a different byte, so the answer shows which form won
+    let forms = {
+      array: new Uint8Array([0x01]),
+      buffer: new Uint8Array([0x02]).buffer,
+      text: '\u0003',
+      base16: '04',
+      base32: Data({ base16: '05' }).base32(),
+      base62: Data({ base16: '06' }).base62(),
+      base64: Data({ base16: '07' }).base64(),
+      random: 8, //eight random bytes, told apart by their size
+    }
+    let names = Object.keys(forms)
+    for (let i = 0; i < names.length; i++) {
+      let p = Object.fromEntries(
+        names.slice(i).map((name) => [name, forms[name]]),
+      ) //this form and every one after it
+      let d = Data(p)
+      if (names[i] == 'random') expect(d.size()).toBe(8)
+      else expect(d.base16(), names[i]).toBe('0' + (i + 1))
+    }
+  })
+  test('in javascript, refuses a form of the wrong type, or none', async () => {
+    let refused = [
+      {}, //no form at all
+      { array: [0x41] }, //a plain array, where a Uint8Array belongs
+      { buffer: new Uint8Array(1) }, //an array, where a buffer belongs
+      { text: 5 },
+      { base16: 0x41 },
+      { random: '3' },
+      { random: -1 },
+      { random: 1.5 },
+      { random: null },
+      { text: '\ud800' }, //a lone surrogate, half of a pair, which has no UTF-8
+    ]
+    for (let p of refused) expect(() => Data(p), JSON.stringify(p)).toThrow()
+    expect(() => Data()).toThrow()
+    expect(() => Data({ base16: '41' }).get(0.5)).toThrow() //and an index that isn't a whole number
+    await expect(sha256('abc')).rejects.toThrow() //and the functions that take a Data refuse anything else
+    expect(() => Bin(3).add('abc')).toThrow()
+  })
+  test('fills a large random request in steps', () => {
+    let size = 3 * 65536 + 16 //getRandomValues fills at most 65536 bytes a call, so this takes four
+    let d = Data({ random: size })
+    expect(d.size()).toBe(size)
+    for (let i = 0; i < size; i += 65536) {
+      let step = d.clipView(i, Math.min(i + 65536, size)).array()
+      expect(step.some((b) => b != 0)).toBe(true) //each step got its bytes, since a step of random bytes that are all zero won't happen
+    }
+  })
+  test('says its type, and keeps its bytes out of json', () => {
+    let d = Data({ text: 'secret' })
+    expect(d.type).toBe('Data')
+    expect(JSON.stringify(d)).toBe('{"type":"Data"}')
+  })
 })
 
 //  _               _

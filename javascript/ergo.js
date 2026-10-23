@@ -534,83 +534,100 @@ Every function in ergo that trades in bytes trades in Data. A hash takes a Data 
 Each form is exact, both ways. Every reader ends by writing the bytes back out and requiring the text it read, so it accepts only what its writer produces: base16 in lowercase, base32 without padding, base64 with it, nothing extra and nothing missing. Text becomes UTF-8 in Unicode Normalization Form C, so the same characters typed two ways become the same bytes, and reading bytes as text refuses bytes that aren't UTF-8, or aren't in that form, rather than guess.
 
 clipView looks at part of a Data without copying it, which is fast, and right whenever the bytes beneath won't change. clipCopy copies them out, for when they could. The same holds for array, which hands over the bytes themselves.
+
+A Data can hold no bytes at all: the empty input every hash has a standard answer for, the bytes of blank text, a clip of nothing, an empty Bin. The Data in icarus, the code ergo grew from, refused nearly every way to be empty: blank text, blank encodings, zero random bytes, and a clip of nothing, and its Bin refused a capacity of zero. Only an empty array or buffer, or a Bin's data before anything was added, made an empty one there. So code built on it came to take a Data as at least one byte, and checked integrity that way. That code doesn't move to ergo's Data unchanged. Before it switches, find each place that leaned on a Data never being empty, and have it ask for itself, with size() > 0.
 */
 
 //a Data wraps Uint8Array for type and bounds checks and format conversion
 //make one from exactly one of {array}, {buffer}, {text}, {base16}, {base32}, {base62}, {base64}, or {random: n} for n bytes from the operating system's random source
+//call its methods on the Data, like d.base16(), since a method taken off its Data has no bytes to work on
 export function Data(p) {
-  let _array, _text, _base16, _base32, _base62, _base64 //private members hang out in this function the returned object came from, and are still here later!
+  return new _Data(p) //the one new, here, so a caller writes Data({text: s}) the way it writes Tag() and Bin(n)
+}
+//a class, so a Data's members are truly private, and every Data shares one set of methods rather than carrying a copy of each
+class _Data {
+  type = 'Data' //note the type
+  #array //the bytes, which a Data always has
+  #text //and each form, kept as it was given, or once it's written
+  #base16
+  #base32
+  #base62
+  #base64
 
   //constructor: a Data always contains an array, keeps the given form, and makes and keeps the others as requested
-  if (p.array instanceof Uint8Array) {
-    _array = p.array //just save the given array, without copying it
-  } else if (p.buffer instanceof ArrayBuffer) {
-    _array = new Uint8Array(p.buffer) //put a uint8 array view over the buffer
-  } else if (typeof p.text == 'string') {
-    _text = _normalText(p.text) //keep the text in the form its bytes hold, so reading it back gives the same text
-    _array = _textToArray(_text)
-  } else if (typeof p.base16 == 'string') {
-    _array = _base16ToArray(p.base16)
-    _base16 = p.base16
-  } else if (typeof p.base32 == 'string') {
-    _array = _base32ToArray(p.base32)
-    _base32 = p.base32
-  } else if (typeof p.base62 == 'string') {
-    _array = _base62ToArray(p.base62)
-    _base62 = p.base62
-  } else if (typeof p.base64 == 'string') {
-    _array = _base64ToArray(p.base64)
-    _base64 = p.base64
-  } else if (p.random != undefined) {
-    _array = _randomArray(p.random)
-  } else {
-    throw new Error(
-      `Data takes one of array, buffer, text, base16, base32, base62, base64, or random: ${JSON.stringify(p)}`,
-    )
+  constructor(p) {
+    if (p.array instanceof Uint8Array) {
+      this.#array = p.array //just save the given array, without copying it
+    } else if (p.buffer instanceof ArrayBuffer) {
+      this.#array = new Uint8Array(p.buffer) //put a uint8 array view over the buffer
+    } else if (typeof p.text == 'string') {
+      this.#text = _normalText(p.text) //keep the text in the form its bytes hold, so reading it back gives the same text
+      this.#array = _textToArray(this.#text)
+    } else if (typeof p.base16 == 'string') {
+      this.#array = _base16ToArray(p.base16)
+      this.#base16 = p.base16
+    } else if (typeof p.base32 == 'string') {
+      this.#array = _base32ToArray(p.base32)
+      this.#base32 = p.base32
+    } else if (typeof p.base62 == 'string') {
+      this.#array = _base62ToArray(p.base62)
+      this.#base62 = p.base62
+    } else if (typeof p.base64 == 'string') {
+      this.#array = _base64ToArray(p.base64)
+      this.#base64 = p.base64
+    } else if (p.random != undefined) {
+      this.#array = _randomArray(p.random)
+    } else {
+      throw new Error(
+        `Data takes one of array, buffer, text, base16, base32, base62, base64, or random: ${JSON.stringify(p)}`,
+      )
+    }
   }
 
-  let d = { type: 'Data' } //note the type
-  d.size = () => _array.length //size in bytes
-  d.array = () => _array //the bytes themselves, which this doesn't copy
-  d.text = () => {
-    if (_text == undefined) _text = _arrayToText(_array)
-    return _text
+  size() {
+    return this.#array.length //size in bytes
   }
-  d.base16 = () => {
-    if (_base16 == undefined) _base16 = _arrayToBase16(_array)
-    return _base16
+  array() {
+    return this.#array //the bytes themselves, which this doesn't copy
   }
-  d.base32 = () => {
-    if (_base32 == undefined) _base32 = _arrayToBase32(_array)
-    return _base32
+  text() {
+    if (this.#text == undefined) this.#text = _arrayToText(this.#array)
+    return this.#text
   }
-  d.base62 = () => {
-    if (_base62 == undefined) _base62 = _arrayToBase62(_array)
-    return _base62
+  base16() {
+    if (this.#base16 == undefined) this.#base16 = _arrayToBase16(this.#array)
+    return this.#base16
   }
-  d.base64 = () => {
-    if (_base64 == undefined) _base64 = _arrayToBase64(_array)
-    return _base64
+  base32() {
+    if (this.#base32 == undefined) this.#base32 = _arrayToBase32(this.#array)
+    return this.#base32
+  }
+  base62() {
+    if (this.#base62 == undefined) this.#base62 = _arrayToBase62(this.#array)
+    return this.#base62
+  }
+  base64() {
+    if (this.#base64 == undefined) this.#base64 = _arrayToBase64(this.#array)
+    return this.#base64
   }
 
   //get the byte at index i, a number 0x00 0 through 0xff 255
-  d.get = (i) => {
-    if (!(Number.isSafeInteger(i) && i >= 0 && i < _array.length))
-      throw new Error(`no byte ${i} in ${_array.length} bytes`)
-    return _array[i]
+  get(i) {
+    if (!(Number.isSafeInteger(i) && i >= 0 && i < this.#array.length))
+      throw new Error(`no byte ${i} in ${this.#array.length} bytes`)
+    return this.#array[i]
   }
 
   //Data's .array() and .clipView() do not copy bytes; use them to be fast when you know the buffer beneath won't change
-  d.clipView = (start, end) => {
-    _checkClip(_array.length, start, end)
-    return Data({ array: _array.subarray(start, end) })
+  clipView(start, end) {
+    _checkClip(this.#array.length, start, end)
+    return Data({ array: this.#array.subarray(start, end) })
   }
   //alternatively, use .clipCopy() when you know the buffer beneath could change, and want the data as it is right now 🪏
-  d.clipCopy = (start, end) => {
-    _checkClip(_array.length, start, end)
-    return Data({ array: _array.slice(start, end) })
+  clipCopy(start, end) {
+    _checkClip(this.#array.length, start, end)
+    return Data({ array: this.#array.slice(start, end) })
   }
-  return d
 }
 
 //a guard: pass a Data through, or throw because the caller handed us something else
