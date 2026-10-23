@@ -535,7 +535,7 @@ Each form is exact, both ways. Every reader ends by writing the bytes back out a
 
 clipView looks at part of a Data without copying it, which is fast, and right whenever the bytes beneath won't change. clipCopy copies them out, for when they could. The same holds for array, which hands over the bytes themselves.
 
-A Data can hold no bytes at all: the empty input every hash has a standard answer for, the bytes of blank text, a clip of nothing, an empty Bin. The Data in icarus, the code ergo grew from, refused nearly every way to be empty: blank text, blank encodings, zero random bytes, and a clip of nothing, and its Bin refused a capacity of zero. Only an empty array or buffer, or a Bin's data before anything was added, made an empty one there. So code built on it came to take a Data as at least one byte, and checked integrity that way. That code doesn't move to ergo's Data unchanged. Before it switches, find each place that leaned on a Data never being empty, and have it ask for itself, with size() > 0.
+A Data can hold no bytes at all: the empty input every hash has a standard answer for, the bytes of blank text, a clip of nothing, an empty Bin.
 */
 
 //a Data wraps Uint8Array for type and bounds checks and format conversion
@@ -1024,7 +1024,7 @@ export function hashStripeOverlap(foreground, background) {
   for (let [c, d] of background) {
     if (a < d && b > c) overlaps.push([Math.max(a, c), Math.min(b, d)]) //there's an overlap!
   }
-  return overlaps //none at all is an empty list, where the original answered null; one type loops the same either way
+  return overlaps //none at all is an empty list, so a caller loops the same either way
 }
 
 //  _               _        __ _ _                        _       _

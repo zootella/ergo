@@ -1,0 +1,68 @@
+# icarus migration
+
+What changes for a project moving from icarus's helpers to ergo's. ergo's functions came from icarus, the JavaScript helpers in the application ergo grew out of, and as each family came over, some of it changed: an answer here, a refusal there, a helper left behind. ergo's comments and documentation describe ergo as it is, so the differences live here, family by family, for checking a project's call sites as it moves. Each claim was checked against icarus's own code, core.js and level0.js, in October 2026, most of them by running it beside ergo's. icarus is JavaScript, so this file uses the JavaScript edition's names.
+
+Each family's section is written as the family comes over; CLAUDE.md has the flow. Outline and quoted encoding come next, with the text helpers they lean on.
+
+## Everywhere
+
+- **Failing.** icarus fails through `toss`, which throws a `TossError` carrying a short kind, like `'data'` or `'bounds'`, and the variables it watched. ergo has no custom throw helper and no custom error class: it throws a plain `Error` whose message names the values involved. Code that catches `TossError`, or reads a kind or a watched variable from one, changes.
+- **One module.** icarus splits its helpers between core.js and level0.js. ergo is the one import `@zootella/ergo`, including the helpers that came from level0.js, like `checkInt` and `sayTick`.
+
+## int
+
+`checkInt` is the one to look at in every call site.
+
+- icarus's `checkInt(i, m)` takes a minimum, zero unless given, so `checkInt(-1)` throws there and `checkInt(n, 1)` refuses zero. ergo's `checkInt(i)` has no minimum. It passes any integer every edition holds exactly, negatives included, and ignores a second argument without a word. Where a call meant a count, write `if (!(hasInt(n) && n >= 0)) throw new Error(...)`, with the call's minimum in place of the zero.
+- `minInt(i, m)` becomes `hasInt(i) && i >= m`.
+- ergo's `checkInt` returns `i`, so it can wrap a value in place. icarus's returned nothing.
+
+## Size
+
+- `Size` has the same names and the same values.
+- `saySize4` says exactly one byte as `1 byte`, where icarus said `1 bytes`. It refuses a negative or a fraction, where icarus said `-5 bytes`, and `1 bytes` for 1.5. Ask `hasInt(n) && n >= 0` about a number from outside first.
+- Left behind: `sayNumber4`, `sayPlural`, and `sayHugeInteger`.
+
+## Time
+
+- `Time` has the same constants and the same values.
+- `Time.months`, with its `zeroToJan`, `oneToJan`, `janToZero`, and `janToOne`, is left behind. ergo has `monthNames`, the full names in title case, so icarus's `Time.months.zeroToJan[m]` is `monthNames[m].slice(0, 3)`, and its lowercase lookups go through `toLowerCase`.
+- `inSeconds(t)` is left behind. It's `t / Time.second`.
+
+## tick
+
+- `tickToText` and `textToTick` write and read the same text, and refuse the same ticks. icarus refused a tick before 1970 with `checkInt`, since it's negative, and one past 9999 with its round trip; ergo refuses both with `hasTick`, which a caller can now ask first.
+- **sayTick is a different function with the same name.** icarus's, in level0.js, takes only a tick. It shifts the tick to the page's local time, says `(not yet)` for zero or a missing tick, and writes one fixed shape, like `Mon05:17a57.300s`. ergo's `sayTick(t, template)` writes UTC in whatever shape its template describes, and throws without one. The template `Dddhh12:mmass.ttts` writes icarus's shape exactly. Shift the tick by the local offset first, and check for zero or a missing tick before calling.
+
+## Tag
+
+- `Tag`, `hasTag`, `checkTag`, and `tagLength` are the same.
+- `checkTagOrBlank(s)` is left behind. It's `if (s !== '') checkTag(s)`.
+
+## Data and Bin
+
+- **A Data can be empty.** icarus meant a Data never to be. It refused blank text, blank base16, base32, base62, and base64, `{random: 0}`, a clip of nothing, and `Bin(0)`. But an empty array or buffer, or a Bin's `data()` before anything was added, made an empty one anyway, and on it `size`, `text`, `base16`, `base32`, `base64`, and hashing all answered as usual. In ergo every one of those makes or holds an empty Data. So wherever a project leaned on a Data having at least one byte, it asks for itself, with `d.size() > 0`. The guarantee had holes in icarus, so those checks are worth writing anyway.
+- **Methods need their Data.** A Data in ergo is a class behind the plain function `Data`. So `let { base16 } = d`, `promise.then(d.text)`, and `{ ...d }`, which worked in icarus, where each method carried its Data along, don't work here. Call the method on the Data.
+- **Text with a byte order mark.** icarus refused bytes that begin with one as text, since its decoder dropped the mark and the round trip noticed. ergo reads the mark as the character U+FEFF, so the text round-trips.
+- **Large random requests.** icarus's `Data({random: n})` threw past 65,536 bytes, Web Crypto's limit for one call. ergo fills a larger request in steps.
+- **Two forms at once.** Given both an array and a buffer, icarus took the buffer and ergo takes the array. Neither was meant to be given more than one.
+- **base62 of no bytes** writes blank in ergo. icarus threw, since its round trip read the blank back through a `Bin(0)`.
+- Left behind:
+  - `d.view()`, which is `new DataView(d.array().buffer, d.array().byteOffset, d.size())`.
+  - `d.hash()`, which is `await sha256(d)`.
+  - Bin's `clipView` and `clipCopy`, which are `b.data().clipView(start, end)` and `b.data().clipCopy(start, end)`.
+  - Bin's `hash()`, which is `await sha256(b.data())`, once the code has checked `b.size() == b.capacity()`, the check icarus's made.
+- `intToBase62` and `base62ToInt` haven't come over yet.
+
+## Hash
+
+- `hashData(d)` is `await sha256(d)`, with the same bytes.
+- `hashText` gives the same answers, and answers for blank text too, which icarus refused.
+- Code that fed a Bin and then hashed it can feed a hasher instead: `Sha256()`, then `update` with each piece and `digest` for the hash, with no capacity to predict. No hasher in ergo speaks icarus's `add` and `hash`.
+- Left behind: `hash_size` and `hash_length`, which are 32 and 52; `checkHash` and `checkHashOrBlank`; `hashObject`; and `random32`.
+
+## Fuji hashes
+
+- `hashFile`, `hashStream`, and `hashProtocol` take the same arguments and give the same answers. ergo's vectors pin icarus's own answers.
+- The status objects time themselves with `Date.now()`, not icarus's `Now()`, so a simulated clock doesn't move them.
+- `hashStream` calls `onProgress` once for each read that completes one or more pieces, and once at the end. icarus called it once for every piece, the last fragment included, and then at the end, so a read that completes two pieces made two calls there and makes one here. And icarus also checked the abort signal before hashing each piece, where ergo checks before each read and before the final hashes.

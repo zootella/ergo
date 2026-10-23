@@ -638,7 +638,7 @@ func CheckTag(s string) string {
 //
 // ClipView looks at part of a Data without copying it, which is fast, and right whenever the bytes beneath won't change. ClipCopy copies them out, for when they could. Array hands over the slice itself.
 //
-// A Data can hold no bytes at all: the empty input every hash has a standard answer for, the bytes of blank text, a clip of nothing, an empty Bin. The Data in icarus, the code ergo grew from, refused nearly every way to be empty: blank text, blank encodings, zero random bytes, and a clip of nothing, and its Bin refused a capacity of zero. Only an empty array or buffer, or a Bin's data before anything was added, made an empty one there. So code built on it came to take a Data as at least one byte, and checked integrity that way. That code doesn't move to ergo's Data unchanged. Before it switches, find each place that leaned on a Data never being empty, and have it ask for itself, with Size() > 0.
+// A Data can hold no bytes at all: the empty input every hash has a standard answer for, the bytes of blank text, a clip of nothing, an empty Bin.
 //
 // The standard library has base16, base32, and base64, and golang.org/x/text has Normalization Form C, which the standard library leaves out; base62 is ergo's own, and the few lines of it are here.
 
