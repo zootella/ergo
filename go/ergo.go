@@ -2,6 +2,8 @@
 package ergo
 
 import (
+	"bytes"
+	"cmp"
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -1412,4 +1414,718 @@ func newStatus(size int64) HashStatus {
 func finish(status *HashStatus) {
 	status.UpdateTime = now()
 	status.Duration = status.UpdateTime - status.StartTime
+}
+
+// Outline: A tree structure where each outline has a name (string), a value (Data, empty for none), and contents (other outlines).
+//
+// An Outline is like JSON, but stripped down to just one type of value: bytes. No strings vs numbers vs booleans vs nulls — just a name, binary data, and contents. This simplicity makes it useful as a canonical container for cryptographic data, configuration, and structured binary payloads where type richness would be overhead.
+//
+// The closest inspiration is Bencoding (Bram Cohen, 2001), the serialization format inside BitTorrent .torrent files. Bencoding is minimal and deterministic — dictionaries must have sorted keys, so the same data always produces the same bytes, which is critical when the SHA-1 hash of a bencoded dictionary is the torrent's identity. Outline borrows this philosophy: deterministic sort for canonical comparison, so two Outlines with the same information produce identical binary output and identical hashes. Where Outline improves on Bencoding: a text form that is visible and useful in source code and documentation (Bencoding is barely legible for anything nontrivial), clear separation of name and value (Bencoding overloads byte strings for both keys and data), and a clean tree structure rather than Bencoding's four types (strings, integers, lists, dictionaries).
+//
+// MessagePack (Furuhashi, 2008), CBOR (RFC 7049, 2013), and Protocol Buffers (Google, 2008) solve a different problem. They are general-purpose serialization formats with rich type systems — integers, floats, strings, arrays, maps, booleans, nulls, extension types. Powerful, but more complex than needed when all your values are just bytes. Protobuf additionally requires schema files compiled ahead of time. Outline is deliberately simpler.
+//
+// Outline has two serialization formats:
+//   - Text: indented lines like «name:"value"0a» using quoted encoding with DataToQuoted. Visible in source code as raw string literals, explains itself in markdown documentation, diffs alongside code in version control. The parser is lenient about indentation width (2 spaces, 4 spaces, tabs), accepts trailing whitespace, blank lines, and # comments at the end of a line or on a line of their own, and takes contents in any order, so pasted or hand-edited text tolerates reasonable sloppiness. The writer is canonical, sorted at every level.
+//   - Binary: span-prefixed length encoding (name size, name, value size, value, contents size, contents) with no delimiters or escaping. Compact and unambiguous — data stays the same size on the wire, unlike JSON which inflates binary with escape sequences. Strict, too: the reader takes only what the writer writes, sorted at every level.
+//
+// One value type (bytes), one tree structure, deterministic sort, a text form and a binary form. It runs anywhere Go does, with no dependencies, no schema files, and no build step.
+//
+// Rules for designing an outline that you're going to use in your application:
+//   - Names are short, lowercase, a-z and 0-9 only. Blank names are fine, duplicate names are fine.
+//   - Insertion order cannot matter. Sorting is deterministic and automatic, so the same information always serializes to the same bytes. If your data has ordering that matters, encode the order explicitly--for example, wrap each item in an outline named "1", "2", "3".
+//   - Names are labels, not data. Don't generate names from data or encode meaning in them; that's what values are for.
+//   - Values are bytes, as raw and granular as possible. No compression, no structured formats, no length-prefixed sub-records; if you have structure, use nested contents instead of packing it into a value.
+//   - No version numbers or vendor codes. An outline grows by adding new names; readers ignore names they don't recognize.
+//   - Outlines are short packets, not bulk storage. A typical outline is well under 8 KB as binary.
+//   - Outlines must be strict trees. No cycles, no shared subtrees--the same outline instance appearing in two places is rejected at serialization time. This matches the text form, which has no way to express sharing.
+
+// HasOutlineName reports whether s is a name an outline can have: lowercase letters and numerals, or blank. It never panics, so a name from outside can be asked about first.
+func HasOutlineName(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i] // a byte at a time, since every character a name can hold is one byte
+		if !('a' <= c && c <= 'z' || '0' <= c && c <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// CheckOutlineName is a guard: it passes an outline name through, or panics because it has a character outside a-z and 0-9, which is a bug in the caller. Ask HasOutlineName first about a name from outside.
+func CheckOutlineName(s string) string {
+	if !HasOutlineName(s) {
+		panic(fmt.Sprintf("not an outline name: %q", s))
+	}
+	return s
+}
+
+// Outline is a tree of outlines, each with a name, a value, and contents, made with NewOutline and filled with Add, AddName, AddValue, and M; the essay above says what it's for and how to design one. The zero Outline has no name, no value, and no contents.
+type Outline struct {
+	name     string     // outlines can have names, [a-z0-9] only, or no name at all
+	value    Data       // and hold one Data value, which holds no bytes when there's no value
+	contents []*Outline // and hold contents, a slice of lower nested outlines
+}
+
+// NewOutline makes an outline with a name, or none with "", and then contents added to it. It panics if name isn't a name, a bug in the caller; HasOutlineName asks first.
+func NewOutline(name string) *Outline {
+	return &Outline{name: CheckOutlineName(name)}
+}
+
+// Length is how many outlines this one holds in its contents.
+func (o *Outline) Length() int {
+	return len(o.contents) // how many we have
+}
+
+// getters and setters for the name and value of this outline
+//
+// o.Name() returns o's current name
+// o.SetName("") sets o's name to blank, totally fine and useful in Outline
+// o.SetName("key1") sets o's name to "key1" only numerals and lowercase letters are allowed
+//
+// o.Value() gets the value, a Data, which holds no bytes if there's no value here (could still be contents, though!)
+// o.SetValue(DataFromText("alice@example.com")) sets the value
+// o.SetValue(Data{}) clears the value, since a Data of no bytes is no value; outlines absolutely can be nameless and/or valueless
+//
+// the name [a-z0-9] requirement may seem restrictive, but prevents the case ambiguity you've likely encountered when examining a JavaScript object of HTTP headers (did the cloud provider lowercase? could there be "origin" *and* "Origin" in here?!!) and discourages overloading values into keys (if you want dots and slashes, build that into nested contents)
+
+// Name is this outline's name, blank if it has none.
+func (o *Outline) Name() string {
+	return o.name
+}
+
+// SetName sets this outline's name, where "" is no name. It panics if k isn't a name, a bug in the caller; HasOutlineName asks first.
+func (o *Outline) SetName(k string) {
+	o.name = CheckOutlineName(k)
+}
+
+// Value is this outline's value, a Data, which holds no bytes if there's no value.
+func (o *Outline) Value() Data {
+	return o.value
+}
+
+// SetValue sets this outline's value, where a Data of no bytes, like Data{}, is no value.
+func (o *Outline) SetValue(d Data) {
+	o.value = d
+}
+
+// Get is the outline at index i in contents. It panics if there's no outline at i, a bug in the caller; Length asks first.
+func (o *Outline) Get(i int) *Outline {
+	if i < 0 || i >= len(o.contents) {
+		panic(fmt.Sprintf("no outline %d in %d", i, len(o.contents)))
+	}
+	return o.contents[i]
+}
+
+// Add adds an outline you've already built to this outline's contents. It panics if c is nil, a bug in the caller.
+func (o *Outline) Add(c *Outline) {
+	if c == nil {
+		panic("an outline adds an Outline, not nil")
+	}
+	o.contents = append(o.contents, c)
+}
+
+// AddName adds a new outline with this name and no value to this outline's contents. It panics if k isn't a name, a bug in the caller.
+func (o *Outline) AddName(k string) {
+	o.Add(NewOutline(k))
+}
+
+// AddValue adds a new unnamed outline with this value to this outline's contents.
+func (o *Outline) AddValue(d Data) {
+	o.Add(&Outline{value: d})
+}
+
+// Has reports whether contents includes an outline with name k. It panics if k isn't a name, since lookups validate too, so a mistake is a loud error instead of a silent "not found".
+func (o *Outline) Has(k string) bool {
+	CheckOutlineName(k)
+	for _, c := range o.contents {
+		if c.name == k {
+			return true
+		}
+	}
+	return false
+}
+
+// o.N() for "navigate": find the first outline in contents with name k, panic if not found
+// o.M() for "make": like N, but creates the outline if it doesn't exist yet
+// o.List("") returns all unnamed contents
+// o.List("type1") or filter out a named sublist, all contents named "type1"
+
+// N navigates to the first outline in contents with name k. It panics if there isn't one, a bug in the caller; Has asks first.
+func (o *Outline) N(k string) *Outline {
+	CheckOutlineName(k)
+	for _, c := range o.contents {
+		if c.name == k {
+			return c
+		}
+	}
+	panic(fmt.Sprintf("no outline named %q", k))
+}
+
+// M makes: like N, but creates the outline if it doesn't exist yet, so a chain like o.M("basket").M("color").SetValue(d) builds as it goes.
+func (o *Outline) M(k string) *Outline {
+	if !o.Has(k) {
+		o.AddName(k)
+	}
+	return o.N(k)
+}
+
+// List is all the contents named k, or with "", all the unnamed ones.
+func (o *Outline) List(k string) []*Outline {
+	CheckOutlineName(k)
+	list := []*Outline{}
+	for _, c := range o.contents {
+		if c.name == k {
+			list = append(list, c)
+		}
+	}
+	return list
+}
+
+// Remove removes all outlines in contents with name k.
+func (o *Outline) Remove(k string) {
+	CheckOutlineName(k)
+	o.contents = slices.DeleteFunc(o.contents, func(c *Outline) bool { return c.name == k })
+}
+
+// Clear discards this outline's value and contents (but keeps the name!).
+func (o *Outline) Clear() {
+	o.value = Data{}
+	o.contents = nil
+}
+
+// Sort sorts all nested contents, at every level, so identical information produces identical serialization. It panics if the outline holds itself, or holds the same outline in two places, a bug in the caller, since an outline is a strict tree.
+func (o *Outline) Sort() {
+	outlineFlat(o) // refuse a cycle or a shared subtree first, as the writers do, since sorting walks the whole tree
+	walk(o, nil, func(x *Outline, depth int) {
+		slices.SortStableFunc(x.contents, outlineCompare) // sort from the deepest levels up, since the walk leaves an outline only after all its contents, then sort this level
+	})
+}
+
+// Text is the outline as indented lines of text, its text serialization, visible in source and documentation. It panics like Sort.
+func (o *Outline) Text() string {
+	return outlineToText(o)
+}
+
+// Data is the outline as bytes, its binary serialization, compact on the wire. It panics like Sort, and if the bytes would pass the span's cap of about 256 MB.
+func (o *Outline) Data() Data {
+	return outlineToData(o)
+}
+
+// outlineToText expresses an outline as indented lines of text for code, documentation, and diffs
+func outlineToText(o *Outline) string {
+	outlineFlat(o)    // guard against user-supplied cycles before sort
+	o = sortedCopy(o) // write a sorted copy, so the text is canonical and the outline the caller has stays as it is
+	var s strings.Builder
+	indents := []string{""} // the indent at each depth, two spaces per level, each made once from the one above it
+	walk(o, func(x *Outline, depth int) {
+		if depth == len(indents) {
+			indents = append(indents, indents[depth-1]+"  ")
+		}
+		s.WriteString(indents[depth] + x.name + ":" + DataToQuoted(x.value) + "\n") // one line for each outline as the walk reaches it, so its contents follow it at a deeper indent
+	}, nil)
+	return s.String()
+}
+
+// TextToOutline parses a text outline into its object form, or returns an error because the text isn't one. It reads leniently, the way the essay above describes, for text a person or an agent wrote by hand.
+func TextToOutline(s string) (*Outline, error) {
+	var lines []string
+	for _, line := range strings.Split(s, "\n") { // split at the line feed alone, rather than at every line ending unicode knows
+		line = strings.TrimSuffix(line, "\r") // accept both \r\n and \n line endings
+		if HasText(line) && !strings.HasPrefix(strings.TrimLeft(line, " \t"), "#") {
+			lines = append(lines, line) // skip blank lines, and lines that are only a comment, at any indent
+		}
+	}
+	if len(lines) == 0 {
+		return nil, fmt.Errorf("ergo: no outline in %q", s)
+	}
+
+	// first pass: parse each line into {o, indent}, where indent is the count of leading spaces or tabs
+	// each space or tab counts as one, so 2-space, 4-space, or tab indentation all work--but must be consistent within a parent's contents
+	type parsedLine struct {
+		o      *Outline
+		indent int
+	}
+	var parsed []parsedLine
+	for _, l := range lines {
+		indent := len(l) - len(strings.TrimLeft(l, " \t"))
+		c := Cut(l[indent:], ":")
+		if !c.Found {
+			return nil, fmt.Errorf("ergo: no colon in %q", l) // every line must have a colon separating name from quoted value
+		}
+
+		// find where the value ends: walk forward through c.After tracking quote state, stop at the first whitespace or # outside quotes
+		valueEnd := len(c.After)
+		inQuote := false
+		for j := 0; j < len(c.After); j++ { // a byte at a time, since each character it looks for is ascii, and in utf-8 an ascii byte is never part of another character
+			ch := c.After[j]
+			if ch == '"' {
+				inQuote = !inQuote
+				continue
+			}
+			if !inQuote && (ch == ' ' || ch == '\t' || ch == '#') {
+				valueEnd = j
+				break
+			}
+		}
+		valuePart := c.After[:valueEnd]
+		tail := strings.TrimLeft(c.After[valueEnd:], " \t")
+		if tail != "" && tail[0] != '#' {
+			return nil, fmt.Errorf("ergo: more after the value in %q", l) // trailing content after the value must be whitespace, or a # comment to end of line, whatever characters it holds
+		}
+
+		if !HasOutlineName(c.Before) {
+			return nil, fmt.Errorf("ergo: not an outline name: %q", c.Before)
+		}
+		value, err := QuotedToData(valuePart) // a blank quoted form is no bytes, which is no value
+		if err != nil {
+			return nil, err
+		}
+		parsed = append(parsed, parsedLine{&Outline{name: c.Before, value: value}, indent})
+	}
+
+	// second pass: build the tree with a stack that tracks the current ancestry and enforces indent consistency
+	// each stack entry is {o, indent, childIndent}: the outline, its own indent, and the indent its children will use (set when the first child appears, then required to match for further children)
+	if parsed[0].indent != 0 {
+		return nil, fmt.Errorf("ergo: the first line of an outline is indented: %q", s) // the root must be at zero indent--no leading whitespace
+	}
+	type entry struct {
+		o           *Outline
+		indent      int
+		childIndent int // -1 until the first child appears
+	}
+	root := parsed[0].o
+	stack := []*entry{{root, 0, -1}}
+	for _, p := range parsed[1:] {
+		for len(stack) > 0 && stack[len(stack)-1].indent >= p.indent {
+			stack = stack[:len(stack)-1] // pop entries that can't be this line's parent (at our level or deeper)
+		}
+		if len(stack) == 0 {
+			return nil, fmt.Errorf("ergo: more than one root in %q", s) // outdented past the root, which means there's a second root or worse
+		}
+		parent := stack[len(stack)-1]
+		if parent.childIndent == -1 {
+			parent.childIndent = p.indent // first child establishes the indent for this parent's contents
+		} else if parent.childIndent != p.indent {
+			return nil, fmt.Errorf("ergo: uneven indent in %q", s) // siblings must share the same indent; a mismatched indent is ambiguous
+		}
+		parent.o.Add(p.o)
+		stack = append(stack, &entry{p.o, p.indent, -1})
+	}
+	return root, nil
+}
+
+// outlineToData serializes an outline to binary data for disk or wire
+func outlineToData(o *Outline) Data {
+	outlineFlat(o)    // guard against user-supplied cycles before sort
+	o = sortedCopy(o) // sort a copy depth-first before we walk the tree, so the output is deterministic, and the outline the caller has stays as it is
+
+	// first pass: measure the exact size we'll need, so we can allocate one buffer and write into it
+	contentsSizes := map[*Outline]int{} // each outline's contents size, measured on the way out of it, so the second pass looks it up in O(1) instead of recomputing
+	var measured []int                  // at each depth, the bytes measured so far of the contents of the outline the walk is in there
+	total := 0
+	walk(o, func(x *Outline, depth int) {
+		if depth == len(measured) {
+			measured = append(measured, 0)
+		}
+		measured[depth] = 0
+	}, func(x *Outline, depth int) {
+		nameBytes := len(x.name) // names are [a-z0-9], so string length equals utf-8 byte count
+		valueBytes := x.value.Size()
+		contentsBytes := measured[depth] // every outline in x's contents has been measured, since the walk leaves x after them
+		contentsSizes[x] = contentsBytes
+		size := len(spanEncode(nameBytes)) + nameBytes + // three (span, bytes) pairs: name, value, contents
+			len(spanEncode(valueBytes)) + valueBytes +
+			len(spanEncode(contentsBytes)) + contentsBytes
+		if depth > 0 {
+			measured[depth-1] += size // count x in the contents of the outline above it
+		} else {
+			total = size
+		}
+	})
+	buffer := make([]byte, 0, total) // second pass: write the bytes in the same order we just measured, into one buffer made the exact size
+
+	walk(o, func(x *Outline, depth int) {
+		buffer = append(buffer, spanEncode(len(x.name))...) // name span and bytes
+		buffer = append(buffer, x.name...)
+		buffer = append(buffer, spanEncode(x.value.Size())...) // value span and bytes
+		buffer = append(buffer, x.value.Array()...)
+		buffer = append(buffer, spanEncode(contentsSizes[x])...) // contents span, then each contained outline, which the walk reaches next
+	}, nil)
+	return DataFromArray(buffer)
+}
+
+// DataToOutline parses binary data into an outline object, or returns an error because the bytes aren't exactly what Data writes. It's strict, the way the essay above describes, for bytes from the wire.
+func DataToOutline(d Data) (*Outline, error) {
+	a := d.Array()
+	w := 0 // walker, moves forward through a as we read bytes out of it
+
+	// span reads a size prefix, advancing the walker
+	span := func() (int, error) {
+		s, err := spanDecode(a, w)
+		w += s.BytesRead
+		return s.Value, err
+	}
+	// read reads n bytes, advancing the walker
+	read := func(n int) ([]byte, error) {
+		if w+n > len(a) {
+			return nil, fmt.Errorf("ergo: an outline needs %d bytes at %d of %d", n, w, len(a))
+		}
+		b := slices.Clone(a[w : w+n]) // copied, so the outline doesn't change if the bytes it came from do
+		w += n
+		return b, nil
+	}
+	type open struct {
+		o        *Outline
+		end      int      // where its contents end
+		previous *Outline // the outline parsed just before the next one in its contents
+	}
+	// start starts parsing one outline: name span + bytes, value span + bytes, then the contents span, which says where its contents end
+	start := func() (*open, error) {
+		o := &Outline{}
+
+		nameSize, err := span()
+		if err != nil {
+			return nil, err
+		}
+		if nameSize > 0 {
+			b, err := read(nameSize)
+			if err != nil {
+				return nil, err
+			}
+			name, err := DataFromArray(b).Text() // a name's bytes are its text, which must be a-z and 0-9
+			if err != nil || !HasOutlineName(name) {
+				return nil, fmt.Errorf("ergo: not an outline name: %x", b)
+			}
+			o.name = name
+		}
+
+		valueSize, err := span()
+		if err != nil {
+			return nil, err
+		}
+		if valueSize > 0 {
+			b, err := read(valueSize)
+			if err != nil {
+				return nil, err
+			}
+			o.value = DataFromArray(b) // zero size stays as the default, no value
+		}
+
+		contentsSize, err := span()
+		if err != nil {
+			return nil, err
+		}
+		return &open{o: o, end: w + contentsSize}, nil
+	}
+
+	// parse outlines inside outlines with a stack of our own, rather than calling ourselves for each level down: the outlines still being parsed, from the root down, each with where its contents end
+	first, err := start()
+	if err != nil {
+		return nil, err
+	}
+	stack := []*open{first}
+	for len(stack) > 0 {
+		top := stack[len(stack)-1]
+		if w < top.end {
+			next, err := start() // parse contained outlines until we've consumed exactly contentsSize bytes
+			if err != nil {
+				return nil, err
+			}
+			stack = append(stack, next)
+			continue
+		}
+		if w != top.end {
+			return nil, fmt.Errorf("ergo: an outline's contents ran past their size") // overran or underran the contents region, input is malformed
+		}
+
+		// top is whole, its contents all parsed, so now it can be compared and added to the outline above it
+		stack = stack[:len(stack)-1]
+		if len(stack) == 0 {
+			break // top is the root
+		}
+		parent := stack[len(stack)-1]
+		if parent.previous != nil && outlineCompare(parent.previous, top.o) > 0 {
+			return nil, fmt.Errorf("ergo: the contents of an outline in binary are out of order") // the binary form is the canonical one, sorted at every level, so the same information is always the same bytes, and an outline's hash is its identity
+		}
+		parent.o.Add(top.o)
+		parent.previous = top.o
+	}
+	if w != len(a) {
+		return nil, fmt.Errorf("ergo: %d bytes after the outline", len(a)-w) // trailing bytes after the root outline mean malformed input
+	}
+	return first.o, nil
+}
+
+// Every walk through an outline keeps a stack of its own, rather than calling itself for each level down. The writers, Sort, and the check for cycles walk with walk, which calls enter with each outline as it reaches it, and leave once all of that outline's contents are done, so what a recursive function would do before calling itself goes in enter, and what it would do after, in leave. Compare keeps a stack of the pairs it has yet to compare, and the binary reader a stack of the outlines it's still reading, each with where its contents end. The text reader has kept a stack of the outlines above the line it's reading since it was first written.
+//
+// The other walks were written recursively at first, which reads more simply, and moved to loops when depth came to matter. A walk that calls itself spends a frame of the language's own stack on every level, and that stack is small: a few thousand levels in JavaScript and in Rust, about a thousand in Python. An outline's binary form arrives from the wire, so a few kilobytes of nesting from anyone could run it out. Past that point, JavaScript and Python throw, Go, whose stacks grow to a gigabyte before it gives up, stops with a fatal error, and Rust aborts the whole process, which nothing can catch. A walk with a stack of its own needs only memory, so how deep an outline goes is limited by memory alone, how large its bytes can be by the span's cap, and no nesting from anywhere can crash it. In JavaScript, timed against the recursion they replaced, the loops are no slower.
+
+// walk walks an outline depth first: it calls enter with each outline as the walk reaches it, and how many levels down it is, and leave with each outline and its depth after all its contents; either can be nil
+func walk(root *Outline, enter, leave func(o *Outline, depth int)) {
+	path := []*Outline{root} // the outlines from the root down to where the walk is
+	next := []int{0}         // and at each level, the index of the next outline to visit in its contents
+	if enter != nil {
+		enter(root, 0)
+	}
+	for len(path) > 0 {
+		level := len(path) - 1
+		o := path[level]
+		if next[level] < len(o.contents) {
+			c := o.contents[next[level]] // go down into the next outline in contents
+			next[level]++
+			path = append(path, c)
+			next = append(next, 0)
+			if enter != nil {
+				enter(c, level+1)
+			}
+		} else {
+			path = path[:level] // or back up, having visited them all
+			next = next[:level]
+			if leave != nil {
+				leave(o, level)
+			}
+		}
+	}
+}
+
+// sortedCopy is a copy of an outline with its contents sorted at every level, deepest first, for the writers; the values are shared rather than copied, since a Data's bytes are the same either way
+func sortedCopy(o *Outline) *Outline {
+	var copies []*Outline     // at each depth, the copy the walk is making there
+	var contents [][]*Outline // and the copies of its contents, gathered to sort before they go in
+	walk(o, func(x *Outline, depth int) {
+		if depth == len(copies) {
+			copies = append(copies, nil)
+			contents = append(contents, nil)
+		}
+		copies[depth] = &Outline{name: x.name, value: x.value}
+		contents[depth] = nil
+	}, func(x *Outline, depth int) {
+		slices.SortStableFunc(contents[depth], outlineCompare) // sort from the deepest levels up, since the walk leaves an outline only after all its contents, then sort this level
+		copies[depth].contents = contents[depth]
+		if depth > 0 {
+			contents[depth-1] = append(contents[depth-1], copies[depth]) // and gather this copy, now whole, for the copy above it
+		}
+	})
+	return copies[0]
+}
+
+// outlineFlat makes sure o doesn't have a cycle or duplicate
+func outlineFlat(o *Outline) {
+	seen := map[*Outline]bool{}
+	walk(o, func(x *Outline, depth int) {
+		if seen[x] {
+			panic("an outline appears twice in its tree, in a cycle or as a shared subtree") // cycle or DAG: x already appears somewhere else in the tree, which the walk finds the first time it comes back to x, before it can go around again
+		}
+		seen[x] = true
+	}, nil)
+}
+
+// outlineCompare compares two outlines for sort order: name first, then value, then nested contents pairwise down the whole tree
+func outlineCompare(o1, o2 *Outline) int {
+	if c := outlineCompareHere(o1, o2); c != 0 {
+		return c // names or values differ, which settles nearly every comparison a sort makes, with nothing made to do it
+	}
+
+	// value tied, so we examine contents pairwise, with a stack of our own of the pairs still to compare, rather than calling ourselves for each level down
+	type pair struct {
+		a, b   *Outline
+		counts bool // a pair marked counts compares how many contents its two outlines hold, once all the pairs of their contents have tied
+	}
+	var pending []pair // the pair on top is next
+	push := func(a, b *Outline) {
+		pending = append(pending, pair{a, b, true})
+		for i := min(len(a.contents), len(b.contents)) - 1; i >= 0; i-- {
+			pending = append(pending, pair{a.contents[i], b.contents[i], false}) // compare contents pairwise at each index, the first pair on top, so it and everything inside it is compared before the second
+		}
+	}
+	push(o1, o2)
+	for len(pending) > 0 {
+		p := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if p.counts {
+			if c := cmp.Compare(len(p.a.contents), len(p.b.contents)); c != 0 {
+				return c // all shared contents match, fewer contents sorts first
+			}
+		} else {
+			if c := outlineCompareHere(p.a, p.b); c != 0 {
+				return c // every caller sorts or checks deeper levels first, so contents at each level are already in order
+			}
+			push(p.a, p.b)
+		}
+	}
+	return 0 // a complete and deep tie: identical name, value, and contents
+}
+
+// outlineCompareHere compares two outlines by their names and values alone, for compare as it goes down the tree
+func outlineCompareHere(o1, o2 *Outline) int {
+	if c := cmp.Compare(o1.name, o2.name); c != 0 {
+		return c // name first, where the lighter name wins
+	}
+	// same name, so we move on to compare value; no value is an empty Data, which sorts before any value, since a shorter value sorts first
+	// bytes.Compare compares the way an outline sorts: byte by byte up to the shorter length, where the first differing byte decides the order, and then the shorter value first
+	return bytes.Compare(o1.value.Array(), o2.value.Array()) // and if the values tie too, compare goes on to examine contents pairwise
+}
+
+// Span: a variable-length integer encoding for size prefixes in the binary format. Each byte contributes 7 bits of value; the high bit is 1 to continue, 0 to stop. Least-significant byte first (little-endian), matching LEB128 (WebAssembly, DWARF debug info) and Protocol Buffers' varint. Capped at 4 bytes (28 bits), giving a maximum value of 268,435,455 — about 256 MB. Outlines are designed to be small packets, not bulk storage, so this ceiling is generous. An Outline that approaches this size is almost certainly a misuse.
+//
+// The size of an outline's contents is a span too, the root's included, so the cap bounds an outline's whole binary form at about 256 MB: the writer refuses an outline whose bytes would pass it, and no span can tell the reader to expect more. That's still more than a program should take from outside. An outline takes as few as 3 bytes in its binary form and about 70 in memory, so reading bytes can take more than 20 times their size, and when Go runs out of memory, it stops with a fatal error, which nothing can recover. So a program that reads outlines from the wire caps how many bytes it accepts before it hands them to DataToOutline, the way a server caps the size of a request body.
+
+// Span is what SpanDecode reads: the size the span says, and how many bytes the span took, so a reader can move past it.
+type Span struct {
+	Value     int
+	BytesRead int
+}
+
+// SpanEncode is a size as a span, a Data of 1 to 4 bytes, the way an outline's binary form writes each size. It panics unless 0 <= n <= 268,435,455, a bug in the caller.
+func SpanEncode(n int) Data {
+	return DataFromArray(spanEncode(n))
+}
+
+// SpanDecode reads the span at an offset into a Data, answering its value and how many bytes it took, so a reader can move past it, or returns an error because the bytes there aren't a span written the one way a span is. It panics if offset is negative, a bug in the caller.
+func SpanDecode(d Data, offset int) (Span, error) {
+	if offset < 0 {
+		panic(fmt.Sprintf("not a count: %d", offset))
+	}
+	return spanDecode(d.Array(), offset)
+}
+
+// spanEncode is a size as a span's bytes, at most 4
+func spanEncode(n int) []byte {
+	if n < 0 || n >= 0x10000000 {
+		panic(fmt.Sprintf("not a size a span can hold: %d", n)) // max 268,435,455 (~256 MB)
+	}
+	var b []byte
+	for {
+		y := byte(n & 0x7f) // take the lowest 7 bits
+		n >>= 7             // shift them off, ready to take the next 7
+		if n > 0 {
+			y |= 0x80 // set the high bit to signal "more bytes follow" to the decoder
+		}
+		b = append(b, y)
+		if n == 0 {
+			return b
+		}
+	}
+}
+
+// spanDecode answers the span's value and how many bytes it took, so the caller can advance its cursor
+func spanDecode(a []byte, offset int) (Span, error) {
+	n := 0
+	shift := 0
+	i := offset
+	for count := 0; count < 4; count++ { // at most 4 bytes; more than that means malformed input
+		if i >= len(a) {
+			return Span{}, fmt.Errorf("ergo: a span runs past the end at %d", i)
+		}
+		y := a[i]
+		i++
+		n |= int(y&0x7f) << shift // accumulate the 7 value bits at their proper place
+		if y&0x80 == 0 {          // high bit clear means this is the last byte
+			if count > 0 && y == 0 {
+				return Span{}, fmt.Errorf("ergo: a span written longer than it needs to be at %d", offset) // reject non-canonical encoding: a multi-byte span whose top byte contributes no bits could have fit in fewer bytes
+			}
+			return Span{n, i - offset}, nil
+		}
+		shift += 7
+	}
+	return Span{}, fmt.Errorf("ergo: a span longer than 4 bytes at %d", offset) // ran past the 4 byte limit without finding a terminating byte
+}
+
+// "Quoted" Encoding: A text format for binary data that mixes quoted ASCII text with base16
+//
+// «"Hello"0a» is easier to read than base16 '48656c6c6f0a'
+// «"A"00» shows the bits of a null terminator in a language-agnostic way, unlike 'A\0'
+// «» blank text is valid quoted encoding to express nothing, size zero bytes
+//
+// unlike the base encoding of Data, quoted is *not* round-trip!
+// a heuristic below balances brevity and readability when choosing which ASCII bytes to expose in quotes
+
+// quotable is true if the given character c is understandable to read in quotes: space through tilde, but not the double quotation mark itself, which is our delimiter!
+func quotable(c byte) bool {
+	return c >= 0x20 && c <= 0x7e && c != 0x22
+}
+
+// DataToQuoted encodes the given Data as text in quoted encoding, where no bytes at all are blank text.
+func DataToQuoted(d Data) string {
+	a := d.Array()
+
+	textCount := 0
+	for _, c := range a {
+		if quotable(c) {
+			textCount++
+		}
+	}
+	if textCount*2 < len(a) {
+		return d.Base16() // under half quotable? it's random or binary, just use base16; ties go to quoted
+	}
+
+	var s strings.Builder
+	for i := 0; i < len(a); { // alternate between:
+		start := i
+		if quotable(a[i]) { // runs of quotable text, and
+			for i < len(a) && quotable(a[i]) {
+				i++
+			}
+			s.WriteString(`"` + string(a[start:i]) + `"`)
+		} else { // runs of unquotable bytes in base16
+			for i < len(a) && !quotable(a[i]) {
+				i++
+			}
+			s.WriteString(hex.EncodeToString(a[start:i]))
+		}
+	}
+	return s.String()
+}
+
+// QuotedToData converts quoted text back to Data, where blank text is valid quoted encoding to describe zero bytes of nothing, or returns an error because the text isn't quoted encoding. It reads leniently, so many texts read to the same bytes.
+func QuotedToData(s string) (Data, error) {
+	b, ok := quotedBytes(s)
+	if !ok {
+		return Data{}, fmt.Errorf("ergo: not quoted encoding: %q", s)
+	}
+	return DataFromArray(b), nil
+}
+
+// quotedBytes is the bytes quoted text holds, or false when it isn't quoted encoding
+func quotedBytes(s string) ([]byte, bool) {
+	// walk through the string, alternating between quoted sections and base16 pairs, a byte at a time, since anything that isn't ascii is refused either way
+	b := []byte{}
+	for i := 0; i < len(s); {
+		if s[i] == '"' { // opening quote starts a text section
+			i++
+			end := strings.IndexByte(s[i:], '"')
+			if end == -1 {
+				return nil, false // no closing quote
+			}
+			for _, c := range []byte(s[i : i+end]) { // strict: every character inside must be something DataToQuoted would have quoted
+				if !quotable(c) {
+					return nil, false // rejects control chars, high bytes, unicode, and the quote char itself
+				}
+				b = append(b, c) // quotable guarantees ASCII, one byte per char
+			}
+			i += end + 1
+		} else { // outside quotes, consume base16 digit pairs
+			if i+1 >= len(s) {
+				return nil, false // a lone base16 digit with no pair is invalid
+			}
+			c0, ok0 := base16Digit(s[i])
+			c1, ok1 := base16Digit(s[i+1])
+			if !ok0 || !ok1 {
+				return nil, false // lowercase base16 only
+			}
+			b = append(b, c0<<4|c1)
+			i += 2
+		}
+	}
+	return b, true
+}
+
+// base16Digit is what a lowercase base16 digit is worth, or false for any other character
+func base16Digit(c byte) (byte, bool) {
+	switch {
+	case '0' <= c && c <= '9':
+		return c - '0', true
+	case 'a' <= c && c <= 'f':
+		return c - 'a' + 10, true
+	}
+	return 0, false
 }

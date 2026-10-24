@@ -170,6 +170,40 @@ func Call(name string, args []any) (result any, err error) {
 			return nil, err
 		}
 		return map[string]any{"tipHash": base16(hashes.TipHash), "pieceHash": base16(hashes.PieceHash)}, nil
+	case "hasOutlineName":
+		return ergo.HasOutlineName(text(args, 0)), nil
+	case "checkOutlineName":
+		return ergo.CheckOutlineName(text(args, 0)), nil
+	case "Outline":
+		return outlineMethod(args)
+	case "textToOutline":
+		o, err := ergo.TextToOutline(text(args, 0))
+		if err != nil {
+			return nil, err
+		}
+		return outlineJSON(o), nil
+	case "dataToOutline":
+		o, err := ergo.DataToOutline(bytes(args, 0))
+		if err != nil {
+			return nil, err
+		}
+		return outlineJSON(o), nil
+	case "spanEncode":
+		return base16(ergo.SpanEncode(int(integer(args, 0)))), nil
+	case "spanDecode":
+		s, err := ergo.SpanDecode(bytes(args, 0), int(integer(args, 1)))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"value": s.Value, "bytesRead": s.BytesRead}, nil
+	case "dataToQuoted":
+		return ergo.DataToQuoted(bytes(args, 0)), nil
+	case "quotedToData":
+		d, err := ergo.QuotedToData(text(args, 0))
+		if err != nil {
+			return nil, err
+		}
+		return base16(d), nil
 	default:
 		return nil, fmt.Errorf("unknown function: %s", name)
 	}
@@ -314,6 +348,127 @@ func binMethod(args []any) (any, error) {
 	default:
 		return nil, fmt.Errorf("unknown method of Bin: %s", method)
 	}
+}
+
+// outlineMethod is an Outline in the protocol: the outline to start from, or a name to make one with, then the name of a method and its arguments, like [outline, "text"] or [outline, "list", "jar"]; a method that answers nothing, like a setter or sort, answers the outline after it
+func outlineMethod(args []any) (any, error) {
+	if len(args) < 2 {
+		panic("an Outline needs an outline or a name, and a method")
+	}
+	o, isOutline, err := outlineFrom(args[0])
+	if err != nil {
+		return nil, err
+	}
+	if !isOutline {
+		o = ergo.NewOutline(name(args, 0)) // an outline arrives already made from its json; a name, or null for none, makes one here
+	}
+	setting := len(args) > 2 // the protocol's name and value get with no argument and set with one, the way javascript's do, where this edition has a setter of each
+	switch method := text(args, 1); method {
+	case "length":
+		return o.Length(), nil
+	case "name":
+		if !setting {
+			return o.Name(), nil
+		}
+		o.SetName(name(args, 2))
+	case "value":
+		if !setting {
+			return base16(o.Value()), nil
+		}
+		o.SetValue(value(args, 2))
+	case "get":
+		return outlineJSON(o.Get(int(integer(args, 2)))), nil
+	case "add":
+		c, isOutline, err := outlineFrom(args[2])
+		if err != nil {
+			return nil, err
+		}
+		if isOutline {
+			o.Add(c)
+		} else if d, isBytes, err := tagged(args[2]); isBytes {
+			if err != nil {
+				return nil, err
+			}
+			o.AddValue(d)
+		} else {
+			o.AddName(text(args, 2))
+		}
+	case "has":
+		return o.Has(name(args, 2)), nil
+	case "n":
+		return outlineJSON(o.N(name(args, 2))), nil
+	case "m":
+		return outlineJSON(o.M(name(args, 2))), nil
+	case "list":
+		list := []any{}
+		for _, c := range o.List(name(args, 2)) {
+			list = append(list, outlineJSON(c))
+		}
+		return list, nil
+	case "remove":
+		o.Remove(name(args, 2))
+	case "clear":
+		o.Clear()
+	case "sort":
+		o.Sort()
+	case "text":
+		return o.Text(), nil
+	case "data":
+		return base16(o.Data()), nil
+	default:
+		return nil, fmt.Errorf("unknown method of Outline: %s", method)
+	}
+	return outlineJSON(o), nil
+}
+
+// outlineFrom is an outline from the protocol's json, {name, value, contents}, its value as tagged bytes and its contents as outlines, in the order the outline holds them; ok is false if v isn't one
+func outlineFrom(v any) (o *ergo.Outline, ok bool, err error) {
+	m, isMap := v.(map[string]any)
+	if !isMap {
+		return nil, false, nil
+	}
+	contents, isList := m["contents"].([]any)
+	if !isList {
+		return nil, false, nil
+	}
+	o = ergo.NewOutline(name([]any{m["name"]}, 0))
+	o.SetValue(value([]any{m["value"]}, 0))
+	for _, c := range contents {
+		child, isOutline, err := outlineFrom(c)
+		if err != nil {
+			return nil, true, err
+		}
+		if !isOutline {
+			panic(fmt.Sprintf("not an outline: %v", c))
+		}
+		o.Add(child)
+	}
+	return o, true, nil
+}
+
+// outlineJSON is an outline as the protocol carries it, {name, value, contents}, in its order, not sorted
+func outlineJSON(o *ergo.Outline) map[string]any {
+	contents := []any{}
+	for i := range o.Length() {
+		contents = append(contents, outlineJSON(o.Get(i)))
+	}
+	return map[string]any{"name": o.Name(), "value": base16(o.Value()), "contents": contents}
+}
+
+// name is argument i as an outline name, where null or a missing argument is "", the blank name, since this edition has no null
+func name(args []any, i int) string {
+	if i >= len(args) || args[i] == nil {
+		return ""
+	}
+	return text(args, i)
+}
+
+// value is argument i as an outline's value, where null is a Data of no bytes, no value
+func value(args []any, i int) ergo.Data {
+	if args[i] == nil {
+		return ergo.Data{}
+	}
+	return bytes(args, i)
 }
 
 // measured is what every edition measures alike: the pieces, and the stripes the tip hash reads
