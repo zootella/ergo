@@ -1609,14 +1609,13 @@ export function Outline(name, value) {
     _value = _noValue()
     _contents = []
   }
-  //sort all nested contents recursively so identical information produces identical serialization
+  //sort all nested contents, at every level, so identical information produces identical serialization
   o.sort = () => {
     _outlineFlat(o) //refuse a cycle or a shared subtree first, as the writers do, since sorting walks the whole tree
-    o._sortDown()
+    _walk(o, null, (x) => x._sortLevel()) //sort from the deepest levels up, since the walk leaves an outline only after all its contents
   }
-  //sort this outline's contents and theirs, once sort has checked the tree
-  o._sortDown = () => {
-    _contents.forEach((c) => c._sortDown()) //sort from the deepest levels up
+  //sort this outline's own contents, for a walk that has already sorted the levels below
+  o._sortLevel = () => {
     _contents.sort(_outlineCompare) //then sort this level
   }
 
@@ -1720,24 +1719,32 @@ function _outlineToData(o) {
   o = _sortedCopy(o) //sort a copy depth-first before we walk the tree, so the output is deterministic, and the outline the caller has stays as it is
 
   //first pass: measure the exact size we'll need, so we can allocate one buffer and write into it
-  let sizes = new Map() //memoize each outline's total byte size, so the second pass looks up contents sizes in O(1) instead of recomputing
-  let _measure = (o) => {
-    if (sizes.has(o)) return sizes.get(o)
-    let nameBytes = o.name().length //names are [a-z0-9], so string length equals utf-8 byte count
-    let valueBytes = o.value().size()
-    let contentsBytes = 0
-    for (let i = 0; i < o.length(); i++) contentsBytes += _measure(o.get(i))
-    let total =
-      _spanEncode(nameBytes).length +
-      nameBytes + //three (span, bytes) pairs: name, value, contents
-      _spanEncode(valueBytes).length +
-      valueBytes +
-      _spanEncode(contentsBytes).length +
-      contentsBytes
-    sizes.set(o, total)
-    return total
-  }
-  let buffer = new Uint8Array(_measure(o))
+  let contentsSizes = new Map() //each outline's contents size, measured on the way out of it, so the second pass looks it up in O(1) instead of recomputing
+  let measured = [] //at each depth, the bytes measured so far of the contents of the outline the walk is in there
+  let total = 0
+  _walk(
+    o,
+    (x, depth) => {
+      measured[depth] = 0
+    },
+    (x, depth) => {
+      let nameBytes = x.name().length //names are [a-z0-9], so string length equals utf-8 byte count
+      let valueBytes = x.value().size()
+      let contentsBytes = measured[depth] //every outline in x's contents has been measured, since the walk leaves x after them
+      contentsSizes.set(x, contentsBytes)
+      let size =
+        _spanEncode(nameBytes).length +
+        nameBytes + //three (span, bytes) pairs: name, value, contents
+        _spanEncode(valueBytes).length +
+        valueBytes +
+        _spanEncode(contentsBytes).length +
+        contentsBytes
+      if (depth > 0)
+        measured[depth - 1] += size //count x in the contents of the outline above it
+      else total = size
+    },
+  )
+  let buffer = new Uint8Array(total)
   let w = 0 //walker, moves forward through buffer as we write bytes into it
 
   //second pass: write the bytes in the same order we just measured
@@ -1745,20 +1752,15 @@ function _outlineToData(o) {
     buffer.set(bytes, w)
     w += bytes.length
   }
-  let _compose = (o) => {
-    let nameArray = Uint8Array.from(o.name(), (c) => c.charCodeAt(0))
-    let valueArray = o.value().array()
-    let contentsSize = 0
-    for (let i = 0; i < o.length(); i++) contentsSize += _measure(o.get(i)) //O(1) lookup from the memoized map
-
+  _walk(o, (x) => {
+    let nameArray = Uint8Array.from(x.name(), (c) => c.charCodeAt(0))
+    let valueArray = x.value().array()
     _write(_spanEncode(nameArray.length)) //name span and bytes
     _write(nameArray)
     _write(_spanEncode(valueArray.length)) //value span and bytes
     _write(valueArray)
-    _write(_spanEncode(contentsSize)) //contents span, then each contained outline recursively
-    for (let i = 0; i < o.length(); i++) _compose(o.get(i))
-  }
-  _compose(o)
+    _write(_spanEncode(contentsSizes.get(x))) //contents span, then each contained outline, which the walk reaches next
+  })
   return Data({ array: buffer })
 }
 //parse binary data into an outline object
@@ -1780,8 +1782,8 @@ export function dataToOutline(d) {
     w += n
     return bytes
   }
-  //recursively parse one outline: name span + bytes, value span + bytes, contents span + recursive
-  let _parse = () => {
+  //start parsing one outline: name span + bytes, value span + bytes, then the contents span, which says where its contents end
+  let _start = () => {
     let o = Outline()
 
     let nameSize = _span()
@@ -1791,31 +1793,39 @@ export function dataToOutline(d) {
     if (valueSize > 0) o.value(Data({ array: _read(valueSize) })) //zero size stays as the default, no value
 
     let contentsSize = _span()
-    let contentsEnd = w + contentsSize
-    let previous //the outline parsed just before this one, at this level
-    while (w < contentsEnd) {
-      //parse contained outlines until we've consumed exactly contentsSize bytes
-      let c = _parse()
-      if (previous && _outlineCompare(previous, c) > 0)
-        throw new Error('the contents of an outline in binary are out of order') //the binary form is the canonical one, sorted at every level, so the same information is always the same bytes, and an outline's hash is its identity
-      o.add(c)
-      previous = c
+    return { o, end: w + contentsSize, previous: undefined } //previous will be the outline parsed just before the next one in its contents
+  }
+
+  //parse outlines inside outlines with a stack of our own, rather than calling ourselves for each level down: the outlines still being parsed, from the root down, each with where its contents end
+  let open = [_start()]
+  let root = open[0].o
+  while (open.length > 0) {
+    let top = open[open.length - 1]
+    if (w < top.end) {
+      open.push(_start()) //parse contained outlines until we've consumed exactly contentsSize bytes
+      continue
     }
-    if (w != contentsEnd)
+    if (w != top.end)
       throw new Error(`an outline's contents ran past their size`) //overran or underran the contents region, input is malformed
 
-    return o
+    //top is whole, its contents all parsed, so now it can be compared and added to the outline above it
+    open.pop()
+    let parent = open[open.length - 1]
+    if (!parent) break //top is the root
+    if (parent.previous && _outlineCompare(parent.previous, top.o) > 0)
+      throw new Error('the contents of an outline in binary are out of order') //the binary form is the canonical one, sorted at every level, so the same information is always the same bytes, and an outline's hash is its identity
+    parent.o.add(top.o)
+    parent.previous = top.o
   }
-  let root = _parse()
   if (w != a.length) throw new Error(`${a.length - w} bytes after the outline`) //trailing bytes after the root outline mean malformed input
   return root
 }
 
-//walk an outline depth first with a stack of its own, rather than calling itself for each level down, so how deep an outline goes is limited by memory, not by the stack; call enter with each outline as the walk reaches it, and how many levels down it is, and leave with each outline after all its contents, so code that would run before a recursive call goes in enter, and code that would run after it, in leave
+//walk an outline depth first with a stack of its own, rather than calling itself for each level down, so how deep an outline goes is limited by memory, not by the stack; call enter with each outline as the walk reaches it, and how many levels down it is, and leave with each outline and its depth after all its contents, so code that would run before a recursive call goes in enter, and code that would run after it, in leave; either can be null
 function _walk(root, enter, leave) {
   let path = [root] //the outlines from the root down to where the walk is
   let next = [0] //and at each level, the index of the next outline to visit in its contents
-  enter(root, 0)
+  if (enter) enter(root, 0)
   while (path.length > 0) {
     let level = path.length - 1
     let o = path[level]
@@ -1823,22 +1833,26 @@ function _walk(root, enter, leave) {
       let c = o.get(next[level]++) //go down into the next outline in contents
       path.push(c)
       next.push(0)
-      enter(c, level + 1)
+      if (enter) enter(c, level + 1)
     } else {
       path.pop() //or back up, having visited them all
       next.pop()
-      if (leave) leave(o)
+      if (leave) leave(o, level)
     }
   }
 }
 //a copy of an outline with its contents sorted at every level, deepest first, for the writers; the values are shared rather than copied, since a Data's bytes are the same either way
 function _sortedCopy(o) {
-  let copy = Outline(o.name(), o.value())
-  let contents = []
-  for (let i = 0; i < o.length(); i++) contents.push(_sortedCopy(o.get(i))) //sort from the deepest levels up
-  contents.sort(_outlineCompare) //then sort this level
-  for (let c of contents) copy.add(c)
-  return copy
+  let copies = [] //at each depth, the copy the walk is making there
+  _walk(
+    o,
+    (x, depth) => {
+      copies[depth] = Outline(x.name(), x.value())
+      if (depth > 0) copies[depth - 1].add(copies[depth]) //into the copy above it, in the order the walk reaches it
+    },
+    (x, depth) => copies[depth]._sortLevel(), //sort from the deepest levels up, since the walk leaves an outline only after all its contents
+  )
+  return copies[0]
 }
 //make sure o doesn't have a cycle or duplicate
 function _outlineFlat(o) {
@@ -1851,8 +1865,34 @@ function _outlineFlat(o) {
     seen.add(x)
   })
 }
-//compare two outlines for sort order: name first, then value, then nested contents recursively down the whole tree
+//compare two outlines for sort order: name first, then value, then nested contents pairwise down the whole tree
 function _outlineCompare(o1, o2) {
+  let c = _outlineCompareHere(o1, o2)
+  if (c) return c //names or values differ, which settles nearly every comparison a sort makes, with nothing made to do it
+
+  //value tied, so we examine contents pairwise, with a stack of our own of the pairs still to compare, rather than calling ourselves for each level down
+  let pending = [] //the pair on top is next; a pair marked counts compares how many contents its two outlines hold, once all the pairs of their contents have tied
+  let _push = (a, b) => {
+    pending.push({ a, b, counts: true })
+    for (let i = Math.min(a.length(), b.length()) - 1; i >= 0; i--)
+      pending.push({ a: a.get(i), b: b.get(i) }) //compare contents pairwise at each index, the first pair on top, so it and everything inside it is compared before the second
+  }
+  _push(o1, o2)
+  while (pending.length > 0) {
+    let { a, b, counts } = pending.pop()
+    if (counts) {
+      if (a.length() < b.length()) return -1 //all shared contents match, fewer contents sorts first
+      if (a.length() > b.length()) return 1
+    } else {
+      let c = _outlineCompareHere(a, b)
+      if (c) return c //every caller sorts or checks deeper levels first, so contents at each level are already in order
+      _push(a, b)
+    }
+  }
+  return 0 //a complete and deep tie: identical name, value, and contents
+}
+//compare two outlines by their names and values alone, for compare as it goes down the tree
+function _outlineCompareHere(o1, o2) {
   //name first
   if (o1.name() < o2.name()) return -1 //o1 wins with a lighter name
   if (o1.name() > o2.name()) return 1 //o2 wins with its lighter name
@@ -1867,17 +1907,7 @@ function _outlineCompare(o1, o2) {
   } //all overlapping value bytes match
   if (a1.length < a2.length) return -1 //shorter value sorts first
   if (a1.length > a2.length) return 1
-
-  //value tied, so we examine contents pairwise
-  let overlappingContentsCount = Math.min(o1.length(), o2.length())
-  for (let i = 0; i < overlappingContentsCount; i++) {
-    //compare contents pairwise at each index
-    let c = _outlineCompare(o1.get(i), o2.get(i))
-    if (c) return c //every caller sorts or checks deeper levels first, so contents at each level are already in order
-  }
-  if (o1.length() < o2.length()) return -1 //all shared contents match, fewer contents sorts first
-  if (o1.length() > o2.length()) return 1
-  return 0 //a complete and deep tie: identical name, value, and contents
+  return 0 //value tied, so compare goes on to examine contents pairwise
 }
 
 //  ___ _ __   __ _ _ __
