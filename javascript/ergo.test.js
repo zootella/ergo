@@ -71,6 +71,18 @@ const vectors = readdirSync(vectorsDirectory)
   .filter((f) => f.endsWith('.json'))
   .flatMap((f) => JSON.parse(readFileSync(join(vectorsDirectory, f), 'utf8')))
 
+//a call that refuses, the way a throws vector or a scripted refusal expects; an unknown function refuses everything, so it can't pass a throws vector, or a scripted refusal either
+async function expectRefused(promise, label) {
+  let refusal = await promise.then(
+    () => undefined,
+    (e) => e,
+  )
+  expect(refusal, `${label ?? ''} answered instead of refusing`).toBeInstanceOf(
+    Error,
+  )
+  expect(refusal.message, label).not.toMatch(/unknown function: /)
+}
+
 //name a case the way it reads: saySize4(10000) five digits of bytes, so the next unit up
 function describeVector(c) {
   return `${c.function}(${c.input.map((a) => JSON.stringify(a)).join(', ')}) ${c.note ?? ''}`
@@ -79,7 +91,7 @@ function describeVector(c) {
 describe.skipIf(!javascriptChosen)('vectors, javascript in-process', () => {
   for (let c of vectors) {
     test(describeVector(c), async () => {
-      if (c.throws) await expect(call(c.function, c.input)).rejects.toThrow()
+      if (c.throws) await expectRefused(call(c.function, c.input))
       else expect(await call(c.function, c.input)).toEqual(c.output)
     })
   }
@@ -914,8 +926,7 @@ describe('editions', () => {
     for (let c of vectors) {
       test(describeVector(c), async () => {
         for (let [name, e] of Object.entries(editions)) {
-          if (c.throws)
-            await expect(e[c.function](...c.input), name).rejects.toThrow()
+          if (c.throws) await expectRefused(e[c.function](...c.input), name)
           else expect(await e[c.function](...c.input), name).toEqual(c.output)
         }
       })
@@ -951,12 +962,12 @@ describe('editions', () => {
           expect(await e.sayDuration(-1500.9, '#.###s'), name).toBe('-1.500s') //toward zero, so the sign stays with the size
           expect(await e.sayDuration(-0.5, '#s'), name).toBe('0s') //and a negative that rounds to zero has no sign
           expect(await e.sayTimeRace(1234.5), name).toBe(`0'01"234`)
-          await expect(e.sayTick(-0.5, 'YYYY'), name).rejects.toThrow() //half a millisecond before 1970 is not a tick
-          await expect(e.sayTick(true, 'YYYY'), name).rejects.toThrow() //a boolean is not a number, though python's bool is an int
-          await expect(e.sayDuration(true, '#s'), name).rejects.toThrow()
+          await expectRefused(e.sayTick(-0.5, 'YYYY'), name) //half a millisecond before 1970 is not a tick
+          await expectRefused(e.sayTick(true, 'YYYY'), name) //a boolean is not a number, though python's bool is an int
+          await expectRefused(e.sayDuration(true, '#s'), name)
           expect(await e.hasInt(true), name).toBe(false)
           expect(await e.hasInt(1.5), name).toBe(false) //hasInt stays strict, since it asks about an integer to carry, not one to say
-          await expect(e.saySize4(true), name).rejects.toThrow() //and saySize4 refuses a boolean along with the fraction the vectors pin, since a fraction of a millisecond is a clock's real precision, while a fraction of a byte is a mistake
+          await expectRefused(e.saySize4(true), name) //and saySize4 refuses a boolean along with the fraction the vectors pin, since a fraction of a millisecond is a clock's real precision, while a fraction of a byte is a mistake
         }
       })
     },
@@ -969,13 +980,13 @@ describe('editions', () => {
       for (let [name, e] of Object.entries(editions)) {
         expect(await e.hasInt(past), name).toBe(false)
         expect(await e.hasInt(-past), name).toBe(false)
-        await expect(e.checkInt(past), name).rejects.toThrow()
-        await expect(e.checkInt(-past), name).rejects.toThrow()
-        await expect(e.sayDuration(past, '# seconds'), name).rejects.toThrow()
-        await expect(e.sayDuration(-past, '# seconds'), name).rejects.toThrow()
-        await expect(e.sayTimeRemaining(past), name).rejects.toThrow()
-        await expect(e.sayTimeRemainingCoarse(-past), name).rejects.toThrow()
-        await expect(e.sayTimeRace(past), name).rejects.toThrow()
+        await expectRefused(e.checkInt(past), name)
+        await expectRefused(e.checkInt(-past), name)
+        await expectRefused(e.sayDuration(past, '# seconds'), name)
+        await expectRefused(e.sayDuration(-past, '# seconds'), name)
+        await expectRefused(e.sayTimeRemaining(past), name)
+        await expectRefused(e.sayTimeRemainingCoarse(-past), name)
+        await expectRefused(e.sayTimeRace(past), name)
       }
     })
   })

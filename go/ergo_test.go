@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/zootella/ergo/go/internal/dispatch"
@@ -41,6 +42,8 @@ func TestVectors(t *testing.T) {
 				switch {
 				case c.Throws && err == nil:
 					t.Errorf("expected a panic, got %v", got)
+				case c.Throws && strings.HasPrefix(err.Error(), "unknown function"):
+					t.Errorf("expected a panic, got %v; an unknown function refuses everything, so it can't pass a throws vector", err)
 				case !c.Throws && err != nil:
 					t.Errorf("unexpected error: %v", err)
 				case !c.Throws && !reflect.DeepEqual(viaJSON(got), c.Output):

@@ -22,7 +22,8 @@ fn vectors() {
             let throws = c["throws"].as_bool().unwrap_or(false);
             let got = zootella_ergo::driver::dispatch(call, args);
             let ok = if throws {
-                got.is_err()
+                got.as_ref()
+                    .is_err_and(|e| !e.starts_with("unknown function")) // an unknown function refuses everything, so it can't pass a throws vector
             } else {
                 got.as_ref().is_ok_and(|v| *v == c["output"])
             };

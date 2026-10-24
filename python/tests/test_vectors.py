@@ -25,7 +25,11 @@ def describe(c: dict) -> str:
 @pytest.mark.parametrize("c", cases, ids=describe)
 def test_vector(c: dict) -> None:
     if c.get("throws"):
-        with pytest.raises(Exception):  # noqa: B017, a throws vector means this edition fails loudly in its own way; which exception is its business, not the vector's
+        # a throws vector means this edition fails loudly in its own way; which exception is its business, not the vector's
+        with pytest.raises(Exception) as refusal:
             call(c["function"], c["input"])
+        assert "unknown function" not in str(refusal.value), (
+            "an unknown function refuses everything, so it can't pass a throws vector"
+        )
     else:
         assert call(c["function"], c["input"]) == c["output"]
