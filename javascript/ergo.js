@@ -1639,13 +1639,13 @@ export function Outline(name, value) {
 function _outlineToText(o) {
   _outlineFlat(o) //guard against user-supplied cycles before sort
   o = _sortedCopy(o) //write a sorted copy, so the text is canonical and the outline the caller has stays as it is
-  //recursive: one line for this outline, then its contents at deeper indent
-  let _compose = (o, indent) => {
-    let s = indent + o.name() + ':' + dataToQuoted(o.value()) + '\n'
-    for (let i = 0; i < o.length(); i++) s += _compose(o.get(i), indent + '  ') //two spaces per level
-    return s
-  }
-  return _compose(o, '')
+  let s = ''
+  let indents = [''] //the indent at each depth, two spaces per level, each made once from the one above it
+  _walk(o, (x, depth) => {
+    if (depth == indents.length) indents.push(indents[depth - 1] + '  ')
+    s += indents[depth] + x.name() + ':' + dataToQuoted(x.value()) + '\n' //one line for each outline as the walk reaches it, so its contents follow it at a deeper indent
+  })
+  return s
 }
 //parse a text outline into its object form
 export function textToOutline(s) {
@@ -1811,6 +1811,26 @@ export function dataToOutline(d) {
   return root
 }
 
+//walk an outline depth first with a stack of its own, rather than calling itself for each level down, so how deep an outline goes is limited by memory, not by the stack; call enter with each outline as the walk reaches it, and how many levels down it is, and leave with each outline after all its contents, so code that would run before a recursive call goes in enter, and code that would run after it, in leave
+function _walk(root, enter, leave) {
+  let path = [root] //the outlines from the root down to where the walk is
+  let next = [0] //and at each level, the index of the next outline to visit in its contents
+  enter(root, 0)
+  while (path.length > 0) {
+    let level = path.length - 1
+    let o = path[level]
+    if (next[level] < o.length()) {
+      let c = o.get(next[level]++) //go down into the next outline in contents
+      path.push(c)
+      next.push(0)
+      enter(c, level + 1)
+    } else {
+      path.pop() //or back up, having visited them all
+      next.pop()
+      if (leave) leave(o)
+    }
+  }
+}
 //a copy of an outline with its contents sorted at every level, deepest first, for the writers; the values are shared rather than copied, since a Data's bytes are the same either way
 function _sortedCopy(o) {
   let copy = Outline(o.name(), o.value())
@@ -1823,15 +1843,13 @@ function _sortedCopy(o) {
 //make sure o doesn't have a cycle or duplicate
 function _outlineFlat(o) {
   let seen = new WeakSet()
-  let _walk = (x) => {
+  _walk(o, (x) => {
     if (seen.has(x))
       throw new Error(
         'an outline appears twice in its tree, in a cycle or as a shared subtree',
-      ) //cycle or DAG: x already appears somewhere else in the tree
+      ) //cycle or DAG: x already appears somewhere else in the tree, which the walk finds the first time it comes back to x, before it can go around again
     seen.add(x)
-    for (let i = 0; i < x.length(); i++) _walk(x.get(i))
-  }
-  _walk(o)
+  })
 }
 //compare two outlines for sort order: name first, then value, then nested contents recursively down the whole tree
 function _outlineCompare(o1, o2) {
