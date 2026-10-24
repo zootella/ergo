@@ -169,6 +169,198 @@ def check_int(i: int) -> int:
     return i
 
 
+# text
+
+# A string is a type, and text is a string that holds something. has_string asks only about the type: is this a string at all, blank and whitespace included. In Rust and Go every string parameter already is one, so there it always answers true, and it's in all four editions to keep them alike. has_text asks about what's inside: a string with at least one character that isn't whitespace, so "a" and " a " are text, while "", " ", and a tab and a newline aren't.
+#
+# Whitespace means one thing everywhere in ergo: the 25 characters on Unicode's White_Space list, and trim takes them off both ends of a string. Each platform's own trim keeps a list of its own. JavaScript's differs from Unicode's at exactly two characters of the 1,112,064: it trims the byte order mark, U+FEFF, which Unicode doesn't call whitespace, and keeps the next line control, U+0085, which Unicode does. Python's strip also trims the four separator controls, U+001C through U+001F, and Rust's trim and Go's TrimSpace follow Unicode's list already. So ergo uses Unicode's list in every edition, and trim, has_text, and deindent agree everywhere about what whitespace is.
+#
+# The two characters are worth knowing by name. Next line is a line break from IBM's mainframes, whose EBCDIC text ends each line with it, and Unicode gave it a place so that text could come over and go back. Nobody types it, and a browser never makes it. Its usual accident is the byte 0x85, the ellipsis in Windows-1252, read as Latin-1 instead, and browsers read anything labeled Latin-1 as Windows-1252. So it turns up only in old data, from a mainframe or from server code that decodes with a true Latin-1, like Python's own latin-1 codec. The byte order mark is common. It sits invisibly at the very start of a file to say how the file is encoded, and Excel's CSV export and older Windows tools write one. The web platform drops it whenever it decodes text, in fetch, TextDecoder, and a File's text, but Python's open with an encoding of utf-8 and bytes' decode keep it, unless asked for utf-8-sig, and so does a Data, so that bytes and text round-trip exactly. A server that reads an uploaded spreadsheet's bytes and splits its first line finds the mark in front of the first column's name, and trim leaves it there, as Python's own strip does. So code that reads files from people should take off a leading byte order mark on purpose.
+
+# unicode's White_Space list, all 25, written out by code point, since python's own str.isspace and str.strip also count the four separator controls, U+001C through U+001F, which unicode doesn't
+_whitespace = "".join(
+    chr(c)
+    for c in (
+        # tab, line feed, vertical tab, form feed, and carriage return
+        *range(0x09, 0x0E),
+        0x20,  # space
+        0x85,  # next line
+        0xA0,  # no-break space
+        0x1680,  # ogham space mark
+        *range(0x2000, 0x200B),  # en quad through hair space, the typographer's spaces
+        0x2028,  # line separator
+        0x2029,  # paragraph separator
+        0x202F,  # narrow no-break space
+        0x205F,  # medium mathematical space
+        0x3000,  # ideographic space
+    )
+)
+
+
+def has_string(s: object) -> bool:
+    """True if s is a string, blank and whitespace included; never raises."""
+    return isinstance(s, str)
+
+
+def check_string(s: str) -> str:
+    """A guard: pass a string through, or raise because the caller handed us something else."""
+    if not has_string(s):
+        raise ValueError(f"not a string: {s!r}")
+    return s
+
+
+# /*************************************************************************/
+# /*                                                                       */
+# /*                                  (`-.                                 */
+# /*                                   \  `                                */
+# /*      /)         ,   '--.           \    `                             */
+# /*     //     , '          \/          \   `   `                         */
+# /*    //    ,'              ./         /\    \>- `   ,----------.        */
+# /*   ( \  ,'    .-.-._        /      ,' /\    \   . `            `.      */
+# /*    \ \'     /.--. .)       ./   ,'  /  \     .      `           `.    */
+# /*     \     -{/    \ .)        / /   / ,' \       `     `-----.     \   */
+# /*     <\      )     ).:)       ./   /,' ,' \        `.  /\)    `.    \  */
+# /*      >^,  //     /..:)       /   //--'    \         `(         )    ) */
+# /*       | ,'/     /. .:)      /   (/         \          \       /    /  */
+# /*       ( |(_    (...::)     (                \       .-.\     /   ,'   */
+# /*       (O| /     \:.::)                      /\    ,'   \)   /  ,'     */
+# /*        \|/      /`.:::)                   ,/  \  /         (  /       */
+# /*                /  /`,.:)                ,'/    )/           \ \       */
+# /*              ,' ,'.'  `:>-._._________,<;'    (/            (,'       */
+# /*            ,'  /  |     `^-^--^--^-^-^-'                              */
+# /*  .--------'   /   |                                                   */
+# /* (       .----'    |   *************************************************/
+# /*  \ <`.  \         |   */
+# /*   \ \ `. \        |   */  Make sure s is a string that has some text,
+# /*    \ \  `.`.      |   */  meaning it's not blank, and not just space
+# /*     \ \   `.`.    |   */
+# /*      \ \    `.`.  |   */
+# /*       \ \     `.`.|   */
+# /*        \ \      `.`.  */
+# /*         \ \     ,^-'  */
+# /*          \ \    |     */
+# /*           `.`.  |     */
+# /*              .`.|     */
+# /*               `._>    */
+# /*                       */
+# /*       g o o d w i n   */
+# /*                       */
+# /*************************/
+
+
+def has_text(s: object) -> bool:
+    """True if s is text: a string with at least one character that isn't whitespace, so " a " is text and " " isn't; never raises."""
+    return has_string(s) and len(trim(s)) > 0
+
+
+def check_text(s: str) -> str:
+    """A guard: pass the text through, or raise because the caller handed us a string that's blank or just whitespace, or something that isn't a string at all."""
+    if not has_text(s):
+        raise ValueError(f"not text: {s!r}")
+    return s  # pass the text through
+
+
+def trim(s: str) -> str:
+    """Take whitespace off both ends of s, by Unicode's list, which differs from Python's own strip at the four separator controls, as the essay above says."""
+    # strip given a list takes off exactly those characters, from both ends
+    return check_string(s).strip(_whitespace)
+
+
+# cut finds a tag in text and cuts the text around it: what's before, the tag itself, and what's after, along with whether it found the tag at all. cut_last does the same from the end, cut2 finds two tags in order and the middle between them, and cut_after_last is for text whose shape you already know, answering what comes after the last tag, and raising when the tag isn't there.
+#
+# A tag is any string of at least one character, whitespace included, so a space, a tab, or a newline can be the tag to cut at. The blank string can't: it would be found at the start of everything, so a loop that cuts until nothing is left would never end.
+
+
+class Cut(NamedTuple):
+    """What cut and cut_last answer: whether they found the tag, and the text before it, the tag itself, and the text after it, which assemble back into the text."""
+
+    found: bool
+    before: str
+    tag: str
+    after: str
+
+
+class Cut2(NamedTuple):
+    """What cut2 answers: whether it found both tags, and the text before the first, the first tag, the middle between them, the second tag, and the text after it."""
+
+    found: bool
+    before: str
+    tag1: str
+    middle: str
+    tag2: str
+    after: str
+
+
+def cut(s: str, tag: str) -> Cut:
+    """Find the first tag in s, and cut s around it."""
+    check_string(s)
+    _check_cut_tag(tag)
+    # python's own cut, whose middle is the tag, or blank when the tag isn't there
+    before, separator, after = s.partition(tag)
+    return Cut(separator != "", before, separator, after)
+
+
+def cut_last(s: str, tag: str) -> Cut:
+    """Find the last tag in s, and cut s around it."""
+    check_string(s)
+    _check_cut_tag(tag)
+    before, separator, after = s.rpartition(tag)
+    if separator == "":
+        # not found, so all of it is before, where rpartition would put it after
+        return Cut(False, s, "", "")
+    return Cut(True, before, separator, after)
+
+
+def cut2(s: str, tag1: str, tag2: str) -> Cut2:
+    """Find tag1 in s, and then tag2 after it, and cut s around both."""
+    c1 = cut(s, tag1)
+    c2 = cut(c1.after, tag2)
+    if c1.found and c2.found:
+        return Cut2(True, c1.before, c1.tag, c2.before, c2.tag, c2.after)
+    return Cut2(False, s, "", "", "", "")  # both must be found
+
+
+def cut_after_last(s: str, tag: str) -> str:
+    """What comes after the last tag in s, or raise because s doesn't have the tag at all."""
+    c = cut_last(s, tag)
+    if not c.found:
+        raise ValueError(f"no {tag!r} in {s!r}")  # make sure s is what we expect
+    return c.after
+
+
+def _check_cut_tag(tag: str) -> str:
+    """A guard: pass a tag to cut at through, or raise because it's blank or not a string; whitespace is fine."""
+    if not (has_string(tag) and len(tag) > 0):
+        raise ValueError(f"not a tag to cut at: {tag!r}")
+    return tag
+
+
+def deindent(s: str) -> str:
+    """Be able to indent multiline string literals with code so they don't mess up overall readability!
+
+    The indent of the first line comes off every line, deeper lines keep the rest of theirs, blank lines at the start and end go, and the text ends with one newline. In JavaScript it's a tag for a template literal; here it takes the text.
+    """
+    check_string(s)
+    # temporarily normalize newlines to just \n, and split into lines there, rather than with splitlines, which would also break at the next line control, the form feed, and the line separators, which stay inside a line here
+    lines = re.sub(r"\r\n|\r|\n", "\n", s).split("\n")
+    # replace tabs at the start with two spaces, and take whitespace off the end
+    lines = [_tabs_to_spaces(line).rstrip(_whitespace) for line in lines]
+    # remove blank lines from the start and end; blank lines in the middle stay
+    lines = "\n".join(lines).strip("\n").split("\n")
+
+    first = lines[0]
+    # how many spaces indent the first line
+    indent = len(first) - len(first.lstrip(" "))
+    # remove up to that many spaces from each line
+    lines = [line[min(indent, len(line) - len(line.lstrip(" "))) :] for line in lines]
+    return "\n".join(lines) + "\n"  # reassemble lines with trailing newlines
+
+
+def _tabs_to_spaces(line: str) -> str:
+    """Replace each tab among a line's leading spaces and tabs with two spaces."""
+    return re.sub(r"^[ \t]+", lambda match: match.group().replace("\t", "  "), line)
+
+
 # size
 
 
@@ -261,9 +453,9 @@ _duration_units = {
     "s": Time.SECOND,
 }
 # a #, a fraction for seconds, any whitespace, and the run of english letters after them, where say_duration looks for a unit's word;
-# the whitespace is unicode's white space written out, since \s and str.isspace also count four separators unicode doesn't
+# the whitespace is _whitespace, unicode's list, since \s and str.isspace also count four separators unicode doesn't
 _duration_tags = re.compile(
-    r"#(\.#{1,3})?([\t\n\v\f\r \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*)([A-Za-z]*)"
+    r"#(\.#{1,3})?([" + re.escape(_whitespace) + r"]*)([A-Za-z]*)"
 )
 
 
