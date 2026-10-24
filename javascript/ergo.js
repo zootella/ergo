@@ -1480,7 +1480,7 @@ The closest inspiration is Bencoding (Bram Cohen, 2001), the serialization forma
 MessagePack (Furuhashi, 2008), CBOR (RFC 7049, 2013), and Protocol Buffers (Google, 2008) solve a different problem. They are general-purpose serialization formats with rich type systems — integers, floats, strings, arrays, maps, booleans, nulls, extension types. Powerful, but more complex than needed when all your values are just bytes. Protobuf additionally requires schema files compiled ahead of time. Outline is deliberately simpler.
 
 Outline has two serialization formats:
-- Text: indented lines like «name:"value"0a» using quoted encoding with dataToQuoted(). Visible in source code as template literals, explains itself in markdown documentation, diffs alongside code in version control. The parser is lenient about indentation width (2 spaces, 4 spaces, tabs), accepts trailing whitespace and # comments on each line, and takes contents in any order, so pasted or hand-edited text tolerates reasonable sloppiness. The writer is canonical, sorted at every level.
+- Text: indented lines like «name:"value"0a» using quoted encoding with dataToQuoted(). Visible in source code as template literals, explains itself in markdown documentation, diffs alongside code in version control. The parser is lenient about indentation width (2 spaces, 4 spaces, tabs), accepts trailing whitespace, blank lines, and # comments at the end of a line or on a line of their own, and takes contents in any order, so pasted or hand-edited text tolerates reasonable sloppiness. The writer is canonical, sorted at every level.
 - Binary: span-prefixed length encoding (name size, name, value size, value, contents size, contents) with no delimiters or escaping. Compact and unambiguous — data stays the same size on the wire, unlike JSON which inflates binary with escape sequences. Strict, too: the reader takes only what the writer writes, sorted at every level.
 
 One value type (bytes), one tree structure, deterministic sort, a text form and a binary form. It runs anywhere JavaScript does — browser, Node, Worker — with no dependencies, no schema files, and no build step.
@@ -1648,7 +1648,7 @@ export function textToOutline(s) {
   let lines = s
     .split('\n')
     .map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line))
-    .filter((line) => hasText(line)) //accept both \r\n and \n line endings, skip blank lines
+    .filter((line) => hasText(line) && !/^[ \t]*#/.test(line)) //accept both \r\n and \n line endings, skip blank lines, and lines that are only a comment, at any indent
   if (lines.length == 0) throw new Error(`no outline in ${JSON.stringify(s)}`)
 
   //first pass: parse each line into {o, indent}, where indent is the count of leading spaces or tabs

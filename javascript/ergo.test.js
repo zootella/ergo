@@ -1127,6 +1127,14 @@ describe.skipIf(!javascriptChosen)('Outline', () => {
       ..b:"7".#comment
     `)
 
+    //a line that's only a comment is skipped, like a blank line, at any indent
+    good(deindent`
+      #a note above
+      a:
+      ....#a note at an indent of its own
+      ..b:"7"
+    `)
+
     //# inside a quoted value is not a comment marker
     good(deindent`
       a:
@@ -1620,6 +1628,11 @@ function sloppyText(o) {
     ])
     s += pick(['\n', '\r\n'])
     if (Math.random() < 0.1) s += pick(['', '  ', '\t', '\u3000']) + '\n' //a blank line, of nothing or of whitespace
+    if (Math.random() < 0.1)
+      s +=
+        pick(['', ' ', '\t', indent]) +
+        pick(['#', '# a note', '#x:"commented out"']) +
+        '\n' //a line that's only a comment, at any indent
     let unit = pick(['  ', '    ', '\t', ' ', ' \t']) //each parent picks the indent its own contents share
     for (let i of shuffledIndexes(o.length())) walk(o.get(i), indent + unit)
   }
