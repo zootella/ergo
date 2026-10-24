@@ -1555,7 +1555,7 @@ export function Outline(name, value) {
 
   //get the outline at index i in contents
   o.get = (i) => {
-    if (i < 0 || i >= _contents.length)
+    if (!(hasInt(i) && i >= 0 && i < _contents.length))
       throw new Error(`no outline ${i} in ${_contents.length}`)
     return _contents[i]
   }
@@ -1675,8 +1675,8 @@ export function textToOutline(s) {
     }
     let valuePart = c.after.slice(0, valueEnd)
     let tail = c.after.slice(valueEnd)
-    if (!/^[ \t]*(#.*)?$/.test(tail))
-      throw new Error(`more after the value in ${JSON.stringify(line)}`) //trailing content after the value must be whitespace, or a # comment to end of line
+    if (!/^[ \t]*(#.*)?$/s.test(tail))
+      throw new Error(`more after the value in ${JSON.stringify(line)}`) //trailing content after the value must be whitespace, or a # comment to end of line, whatever characters it holds, which the s flag lets the dot match
 
     let o = Outline()
     o.name(c.before)
@@ -1780,7 +1780,7 @@ export function dataToOutline(d) {
     let o = Outline()
 
     let nameSize = _span()
-    if (nameSize > 0) o.name(String.fromCharCode(..._read(nameSize)))
+    if (nameSize > 0) o.name(Data({ array: _read(nameSize) }).text()) //a name's bytes are its text, which the setter checks is a-z and 0-9
 
     let valueSize = _span()
     if (valueSize > 0) o.value(Data({ array: _read(valueSize) })) //zero size stays as the default, no value

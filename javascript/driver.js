@@ -63,6 +63,13 @@ const adapters = {
     let status = await ergo.hashStream({ stream, size, protocol })
     return { tipHash: status.tipHash, pieceHash: status.pieceHash }
   },
+  //an Outline takes the outline to start from, or a name to make one with, then the name of a method and its arguments, like [outline, 'text'] or [outline, 'list', 'jar']; a method that answers nothing, like a setter or sort, answers the outline after it
+  Outline: (o, method, ...args) => {
+    if (o?.type != 'Outline') o = ergo.Outline(o) //an outline arrives already made from its json; a name, or null for none, makes one here
+    let answer = o[method](...args)
+    if (answer == undefined) return o
+    return answer
+  },
   //deindent is a tag in javascript and takes text in the other editions, so the protocol hands it one piece of text, the way a template literal with no fields would
   deindent: (s) => ergo.deindent([s]),
   //a FujiHasher takes the size it's told, the pieces to feed it in order, and a protocol, and answers both hashes, or refuses when the pieces don't add up to the size
@@ -83,6 +90,11 @@ function fromProtocol(v) {
   if (typeof v != 'object' || v === null) return v //text, numbers, and booleans pass as they are; ask this first, since the in operator below works only on objects
   if ('base16' in v) return ergo.Data({ base16: v.base16 }) //ergo's own base16 reader, which takes exactly what its writer makes, lowercase and nothing else
   if ('mulberry' in v) return mulberryData(v.mulberry, v.length)
+  if ('contents' in v) {
+    let o = ergo.Outline(v.name, fromProtocol(v.value)) //an outline is {name, value, contents}, its value as tagged bytes and its contents as outlines, in the order the outline holds them
+    for (let c of v.contents) o.add(fromProtocol(c))
+    return o
+  }
   if ('repeat' in v) {
     let unit = ergo.Data({ base16: v.repeat }).array()
     if (unit.length == 0 || !Number.isSafeInteger(v.length) || v.length < 0)
@@ -93,9 +105,14 @@ function fromProtocol(v) {
   }
   return v
 }
-//and a result that is a Data goes back the first way, as its base16, wherever it is in the answer
+//and a result that is a Data goes back the first way, as its base16, and an Outline as {name, value, contents}, wherever it is in the answer
 function toProtocol(v) {
   if (v?.type == 'Data') return { base16: v.base16() }
+  if (v?.type == 'Outline') {
+    let contents = []
+    for (let i = 0; i < v.length(); i++) contents.push(toProtocol(v.get(i)))
+    return { name: v.name(), value: toProtocol(v.value()), contents } //and an outline goes back as {name, value, contents}, in its order, not sorted, so a vector sees the order it holds
+  }
   if (Array.isArray(v)) return v.map(toProtocol)
   if (v?.constructor == Object)
     return Object.fromEntries(

@@ -107,7 +107,7 @@ This separation is the mechanism behind the mid-career engineer test above. The 
 
 ## Open
 
-- Handles for objects like Outline in the driver protocol. Bytes arrived with the hashes, and construction.md has their tagged form; a hasher, a Data, and a Bin needed no handle, since a vector hands each what it needs in one call.
+- Handles in the driver protocol, for a test that needs a driver to keep an object across calls. Bytes cross as tagged json, and an Outline as a tree of its name, value, and contents, as construction.md describes, so a hasher, a Data, a Bin, and an Outline each answer in one call, and nothing has needed a handle yet.
 - Whether a reader in JavaScript should refuse text it can't read with a value rather than a thrown Error. Text from outside is ordinary input, which the walled city of quad-style.md answers with values, as Rust and Go already do; raising stays native in Python, where `int("x")` raises. Tick zero is a real moment, so "the tick or false" is awkward.
 
 ## Later

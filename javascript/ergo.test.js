@@ -1492,9 +1492,12 @@ const tickPieces = [
   'Y m d dd h hh 1 2 4 s T Z'.split(' '),
   [...' :-.,é三🙂', '$&'],
 ]
+//one of the things in a list, at random
+function pick(a) {
+  return a[Math.floor(Math.random() * a.length)]
+}
 //a random template of one to twelve pieces, each from a group picked first, so a short group turns up as often as a long one
 function randomTemplate(groups) {
-  let pick = (a) => a[Math.floor(Math.random() * a.length)]
   let template = ''
   let length = 1 + Math.floor(Math.random() * 12)
   for (let i = 0; i < length; i++) template += pick(pick(groups))
@@ -1535,8 +1538,117 @@ const textPieces = [
 function randomText(pieces) {
   let s = ''
   for (let i = Math.floor(Math.random() * (pieces + 1)); i > 0; i--)
-    s += textPieces[Math.floor(Math.random() * textPieces.length)]
+    s += pick(textPieces)
   return s
+}
+
+//the names random outlines take, a few of them, blank most of all, so siblings share names and ties come up
+const outlineNames = ['', '', '', 'a', 'a', 'b', 'ab', 'a0', 'z9']
+//and the values, as base16: none most of all, and ones that tie, that begin one another, and that are the characters quoted encoding treats with care, a quote, a space, and a number sign
+const outlineValues = ['', '', '', '00', '01', '61', '6161', '22', '20', '23']
+//and the characters of a value that reads as text, with the ones a text outline treats with care
+const outlineCharacters = [...'ab:# "\t\n']
+//a random value: often one from the list above, sometimes text, sometimes random bytes
+function randomValue() {
+  let r = Math.random()
+  if (r < 0.6) return Data({ base16: pick(outlineValues) })
+  if (r < 0.8) {
+    let s = ''
+    for (let i = Math.floor(Math.random() * 12); i > 0; i--)
+      s += pick(outlineCharacters)
+    return Data({ text: s })
+  }
+  return Data({ random: Math.floor(Math.random() * 40) })
+}
+//a random outline, its contents nested down at most depth levels
+function randomOutline(depth) {
+  let o = Outline(pick(outlineNames), randomValue())
+  if (depth > 0) {
+    for (let i = Math.floor(Math.random() * 5); i > 0; i--)
+      o.add(randomOutline(depth - 1 - Math.floor(Math.random() * 2)))
+  }
+  return o
+}
+//an outline as plain json, in the order it holds its contents, to compare two outlines, or one before and after
+function outlineShape(o) {
+  let contents = []
+  for (let i = 0; i < o.length(); i++) contents.push(outlineShape(o.get(i)))
+  return JSON.stringify([o.name(), o.value().base16(), contents])
+}
+//the indexes 0 through n - 1 in a random order
+function shuffledIndexes(n) {
+  let a = Array.from({ length: n }, (_, i) => i)
+  for (let i = a.length - 1; i > 0; i--) {
+    let j = Math.floor(Math.random() * (i + 1))
+    ;[a[i], a[j]] = [a[j], a[i]]
+  }
+  return a
+}
+//a copy of an outline with its contents in a random order at every level
+function shuffledOutline(o) {
+  let copy = Outline(o.name(), o.value())
+  for (let i of shuffledIndexes(o.length())) copy.add(shuffledOutline(o.get(i)))
+  return copy
+}
+//a value in quoted encoding a person might write instead: as the writer writes it, as base16 alone, or with quotable bytes quoted one at a time, or not
+function sloppyQuoted(d) {
+  let r = Math.random()
+  if (r < 0.4) return dataToQuoted(d)
+  if (r < 0.7) return d.base16()
+  let s = ''
+  for (let b of d.array()) {
+    let quotable = b >= 0x20 && b <= 0x7e && b != 0x22
+    if (quotable && Math.random() < 0.5) s += '"' + String.fromCharCode(b) + '"'
+    else s += b.toString(16).padStart(2, '0')
+  }
+  return s
+}
+//an outline as text the way a person might write it by hand: contents in any order, any indent, any quoting, trailing whitespace and comments, blank lines, and either line ending
+function sloppyText(o) {
+  let s = ''
+  let walk = (o, indent) => {
+    s += indent + o.name() + ':' + sloppyQuoted(o.value())
+    s += pick([
+      '',
+      '',
+      ' ',
+      '\t',
+      ' #note',
+      '#',
+      ' # "quoted" #more',
+      '\t#\u2028\r',
+    ])
+    s += pick(['\n', '\r\n'])
+    if (Math.random() < 0.1) s += pick(['', '  ', '\t', '\u3000']) + '\n' //a blank line, of nothing or of whitespace
+    let unit = pick(['  ', '    ', '\t', ' ', ' \t']) //each parent picks the indent its own contents share
+    for (let i of shuffledIndexes(o.length())) walk(o.get(i), indent + unit)
+  }
+  walk(o, '')
+  return s
+}
+//a copy of some bytes with one thing changed: a byte replaced, inserted, or deleted, or the end cut off
+function mutatedData(d) {
+  let a = Array.from(d.array())
+  let i = Math.floor(Math.random() * (a.length + 1))
+  let b = pick([
+    Math.floor(Math.random() * 256),
+    pick([0x00, 0x01, 0x30, 0x61, 0x62, 0x80]),
+  ])
+  let r = Math.random()
+  if (r < 0.4 && a.length > 0) a[Math.min(i, a.length - 1)] = b
+  else if (r < 0.6) a.splice(i, 0, b)
+  else if (r < 0.8 && a.length > 0) a.splice(Math.min(i, a.length - 1), 1)
+  else a = a.slice(0, i)
+  return Data({ array: new Uint8Array(a) })
+}
+//and a copy of some text with one character replaced, inserted, or deleted, from the characters a text outline cares about
+function mutatedText(s) {
+  let i = Math.floor(Math.random() * (s.length + 1))
+  let c = pick([...'a:" \t#\n0A\r', '\u00a0'])
+  let r = Math.random()
+  if (r < 0.4) return s.slice(0, i) + c + s.slice(i + 1)
+  if (r < 0.7) return s.slice(0, i) + c + s.slice(i)
+  return s.slice(0, i) + s.slice(i + 1)
 }
 
 describe.skipIf(!fuzzSeconds)('fuzz', () => {
@@ -1667,6 +1779,116 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
       }
       console.log(
         `javascript alone made ${cycles} quoted encoding round trips in ${fuzzSeconds} seconds`,
+      )
+    },
+    (fuzzSeconds + 60) * Time.second,
+  )
+
+  test.skipIf(!javascriptChosen)(
+    'a random outline round-trips through both forms, and writes the same bytes from any order and any hand-written text, in javascript alone, in-process',
+    () => {
+      let stop = Date.now() + fuzzSeconds * Time.second
+      let cycles = 0
+      while (Date.now() < stop) {
+        let o = randomOutline(5)
+        let before = outlineShape(o)
+        let d = o.data() //the canonical bytes
+        let t = o.text() //and the canonical text
+        let fail = (what) => {
+          throw new Error(`${what}: ${t}`) //a plain check rather than expect, which would cost more than the functions under test
+        }
+        if (outlineShape(o) != before) fail('a writer changed the outline')
+        if (dataToOutline(d).data().base16() != d.base16())
+          fail('the bytes did not round-trip')
+        if (dataToOutline(d).text() != t) fail('the bytes read to other text')
+        if (textToOutline(t).data().base16() != d.base16())
+          fail('the text read to other bytes')
+        let shuffled = shuffledOutline(o)
+        if (shuffled.data().base16() != d.base16())
+          fail('the same outline in another order wrote other bytes')
+        shuffled.sort()
+        if (outlineShape(shuffled) != outlineShape(dataToOutline(d)))
+          fail('sort in place disagreed with the sort the writers do')
+        let sloppy = sloppyText(o)
+        if (textToOutline(sloppy).data().base16() != d.base16())
+          fail(
+            `hand-written text read to other bytes, from ${JSON.stringify(sloppy)}`,
+          )
+        cycles++
+      }
+      console.log(
+        `javascript alone fuzzed ${cycles} random outlines through both forms, in any order, and as hand-written text, in ${fuzzSeconds} seconds, ${Math.round(cycles / fuzzSeconds)} a second`,
+      )
+    },
+    (fuzzSeconds + 60) * Time.second,
+  )
+
+  test.skipIf(!javascriptChosen)(
+    'the readers take only what reads back the same: changed bytes, text, and spans refuse, or read to a form that round-trips, in javascript alone, in-process',
+    () => {
+      let stop = Date.now() + fuzzSeconds * Time.second
+      let cycles = 0
+      let refused = 0
+      while (Date.now() < stop) {
+        let o = randomOutline(3)
+
+        //the binary reader is strict: whatever bytes it takes are exactly the bytes its writer writes
+        let d = mutatedData(o.data())
+        let fromData
+        try {
+          fromData = dataToOutline(d)
+        } catch {
+          refused++ //refused, which is fine; the property is about what it takes
+        }
+        if (fromData && fromData.data().base16() != d.base16())
+          throw new Error(
+            `the binary reader took ${d.base16()}, and wrote back ${fromData.data().base16()}`,
+          )
+
+        //the text reader is lenient, but whatever text it takes, it writes back as text that reads to the same outline
+        let s = mutatedText(o.text())
+        let fromText
+        try {
+          fromText = textToOutline(s)
+        } catch {
+          refused++
+        }
+        if (fromText) {
+          let t = fromText.text()
+          if (
+            textToOutline(t).text() != t ||
+            textToOutline(t).data().base16() != fromText.data().base16()
+          )
+            throw new Error(
+              `the text reader took ${JSON.stringify(s)}, and its text did not read back the same`,
+            )
+        }
+
+        //and a span is strict, too: a size writes as one set of bytes, and reads back from them, and no other bytes read to it
+        let n = Math.floor(Math.random() * 2 ** Math.floor(Math.random() * 29)) //as often small as large, up to the most four bytes hold
+        let e = spanEncode(n)
+        let r = spanDecode(e, 0)
+        if (r.value != n || r.bytesRead != e.size())
+          throw new Error(`the span of ${n} did not round-trip`)
+        let x = Data({ random: 1 + Math.floor(Math.random() * 5) })
+        let fromSpan
+        try {
+          fromSpan = spanDecode(x, 0)
+        } catch {
+          refused++
+        }
+        if (
+          fromSpan &&
+          spanEncode(fromSpan.value).base16() !=
+            x.clipView(0, fromSpan.bytesRead).base16()
+        )
+          throw new Error(
+            `the span reader took ${x.base16()} as ${fromSpan.value}, which writes as other bytes`,
+          )
+        cycles++
+      }
+      console.log(
+        `javascript alone changed ${cycles} random outlines' bytes and text, and read random spans, in ${fuzzSeconds} seconds, ${Math.round(cycles / fuzzSeconds)} a second, and the readers refused ${refused} of the ${cycles * 3}`,
       )
     },
     (fuzzSeconds + 60) * Time.second,
