@@ -1747,6 +1747,21 @@ function mutatedData(d) {
   else a = a.slice(0, i)
   return Data({ array: new Uint8Array(a) })
 }
+//an outline as the protocol carries it, {name, value, contents}, in the order it holds its contents, to hand to an edition or compare with one's answer
+function outlineTree(o) {
+  let contents = []
+  for (let i = 0; i < o.length(); i++) contents.push(outlineTree(o.get(i)))
+  return { name: o.name(), value: { base16: o.value().base16() }, contents }
+}
+//what an edition answers, or that it refused, without what it said, since each edition words a refusal its own way; an unknown function refuses everything, so it isn't a refusal here
+async function answerOrRefusal(f) {
+  try {
+    return { answer: await f() }
+  } catch (e) {
+    if (/unknown function: /.test(e.message)) throw e
+    return { refused: true }
+  }
+}
 //and a copy of some text with one character replaced, inserted, or deleted, from the characters a text outline cares about
 function mutatedText(s) {
   let i = Math.floor(Math.random() * (s.length + 1))
@@ -2138,6 +2153,54 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
         }
         console.log(
           `every edition fuzzed ${cycles} random texts through trim, hasText, cut, cutLast, and deindent in ${fuzzSeconds} seconds, ${Math.round(cycles / fuzzSeconds)} a second`,
+        )
+      },
+      (fuzzSeconds + 60) * Time.second,
+    )
+
+    test(
+      'random outlines write the same text and bytes in every edition, and read the same outline, or refuse, from changed bytes, changed text, and sloppy hand-written text',
+      async () => {
+        let stop = Date.now() + fuzzSeconds * Time.second
+        let cycles = 0
+        while (Date.now() < stop) {
+          let o = randomOutline(4)
+          let tree = outlineTree(o)
+          let bytes = { base16: mutatedData(o.data()).base16() }
+          let changed = mutatedText(o.text())
+          let sloppy = sloppyText(o)
+          let expected = {
+            text: o.text(),
+            data: { base16: o.data().base16() },
+            fromBytes: await answerOrRefusal(() =>
+              outlineTree(dataToOutline(Data(bytes))),
+            ),
+            fromChanged: await answerOrRefusal(() =>
+              outlineTree(textToOutline(changed)),
+            ),
+            fromSloppy: await answerOrRefusal(() =>
+              outlineTree(textToOutline(sloppy)),
+            ),
+          } //javascript's answers in-process, which every edition's must match
+          for (let [name, e] of Object.entries(editions)) {
+            let answer = {
+              text: await e.Outline(tree, 'text'),
+              data: await e.Outline(tree, 'data'),
+              fromBytes: await answerOrRefusal(() => e.dataToOutline(bytes)),
+              fromChanged: await answerOrRefusal(() =>
+                e.textToOutline(changed),
+              ),
+              fromSloppy: await answerOrRefusal(() => e.textToOutline(sloppy)),
+            }
+            expect(
+              answer,
+              `${name} given ${JSON.stringify(tree)}, the bytes ${bytes.base16}, and the texts ${JSON.stringify(changed)} and ${JSON.stringify(sloppy)}`,
+            ).toEqual(expected)
+          }
+          cycles++
+        }
+        console.log(
+          `every edition fuzzed ${cycles} random outlines through both writers, and changed bytes, changed text, and sloppy text through both readers, in ${fuzzSeconds} seconds, ${Math.round(cycles / fuzzSeconds)} a second`,
         )
       },
       (fuzzSeconds + 60) * Time.second,

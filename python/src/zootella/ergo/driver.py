@@ -21,10 +21,13 @@ from zootella.ergo import (
     HashMeasurement,
     HashProtocol,
     HashUnit,
+    Outline,
     Size,
+    Span,
     Time,
     blake3,
     check_int,
+    check_outline_name,
     check_string,
     check_tag,
     check_text,
@@ -33,8 +36,11 @@ from zootella.ergo import (
     cut2,
     cut_after_last,
     cut_last,
+    data_to_outline,
+    data_to_quoted,
     deindent,
     has_int,
+    has_outline_name,
     has_string,
     has_tag,
     has_text,
@@ -45,6 +51,7 @@ from zootella.ergo import (
     hash_stripe_overlap,
     hash_text,
     iso_to_tick,
+    quoted_to_data,
     say_duration,
     say_size4,
     say_tick,
@@ -53,7 +60,10 @@ from zootella.ergo import (
     say_time_remaining_coarse,
     sha1,
     sha256,
+    span_decode,
+    span_encode,
     tag,
+    text_to_outline,
     text_to_tick,
     tick_to_iso,
     tick_to_text,
@@ -138,6 +148,15 @@ functions = {
     "FujiHasher": lambda size, pieces, protocol=None: _fed_fuji(
         FujiHasher(size, _protocol(protocol)), pieces
     ),
+    "hasOutlineName": has_outline_name,
+    "checkOutlineName": check_outline_name,
+    "Outline": lambda o, method, *args: _outline_method(o, method, args),
+    "textToOutline": text_to_outline,
+    "dataToOutline": data_to_outline,
+    "spanEncode": span_encode,
+    "spanDecode": lambda data, offset: _span_answer(span_decode(data, offset)),
+    "dataToQuoted": data_to_quoted,
+    "quotedToData": quoted_to_data,
 }
 
 
@@ -235,6 +254,26 @@ def _bin_method(capacity: int, items: list, method: str) -> object:
     return getattr(b, method)()
 
 
+def _outline_method(o: Outline | str | None, method: str, args: tuple) -> object:
+    """An Outline takes the outline to start from, or a name to make one with, then the name of a method and its arguments, like [outline, "text"] or [outline, "list", "jar"]; a method that answers nothing, like a setter or sort, answers the outline after it."""
+    if not isinstance(o, Outline):
+        o = Outline(
+            o
+        )  # an outline arrives already made from its json; a name, or null for none, makes one here
+    # the protocol's name and value get with no argument and set with one, the way javascript's do, where this edition has a setter of each
+    if method in ("name", "value") and args:
+        method = "set_" + method
+    answer = getattr(o, method)(*args)
+    if answer is None:
+        return o
+    return answer
+
+
+def _span_answer(s: Span) -> dict:
+    """What spanDecode answers, as javascript's object spells it."""
+    return {"value": s.value, "bytesRead": s.bytes_read}
+
+
 def _from_protocol(v: object) -> object:
     """An argument as this edition takes it: tagged bytes become a Data, a list is decoded all through, and anything else passes as it is."""
     if isinstance(v, list):
@@ -244,6 +283,12 @@ def _from_protocol(v: object) -> object:
         return Data(base16=v["base16"])
     if isinstance(v, dict) and "mulberry" in v:
         return _mulberry_data(v["mulberry"], v["length"])
+    if isinstance(v, dict) and "contents" in v:
+        # an outline is {name, value, contents}, its value as tagged bytes and its contents as outlines, in the order the outline holds them
+        o = Outline(v["name"], _from_protocol(v["value"]))
+        for c in v["contents"]:
+            o.add(_from_protocol(c))
+        return o
     if isinstance(v, dict) and "repeat" in v:
         unit, n = Data(base16=v["repeat"]).array(), v.get("length")
         # a unit of at least one byte, repeated to a count within the integer ceiling, the same rule in every edition; a bool is an int in python, and never a count
@@ -259,9 +304,15 @@ def _from_protocol(v: object) -> object:
 
 
 def _to_protocol(v: object) -> object:
-    """A result as the protocol carries it: a Data goes back tagged, as its base16, wherever it is in the answer."""
+    """A result as the protocol carries it: a Data goes back tagged, as its base16, and an Outline as {name, value, contents}, in its order, not sorted, wherever it is in the answer."""
     if isinstance(v, Data):
         return {"base16": v.base16()}
+    if isinstance(v, Outline):
+        return {
+            "name": v.name(),
+            "value": _to_protocol(v.value()),
+            "contents": [_to_protocol(v.get(i)) for i in range(v.length())],
+        }
     if isinstance(v, dict):
         return {k: _to_protocol(x) for k, x in v.items()}
     if isinstance(v, list):

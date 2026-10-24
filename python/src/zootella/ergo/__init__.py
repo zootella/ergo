@@ -148,6 +148,7 @@ True
 
 import base64
 import binascii
+import functools
 import hashlib
 import math
 import re
@@ -1649,3 +1650,718 @@ def hash_stream(
     if on_progress:
         on_progress(status)
     return status
+
+
+# outline
+
+# Outline: A tree structure where each outline has a name (string), a value (Data, empty for none), and contents (other outlines).
+#
+# An Outline is like JSON, but stripped down to just one type of value: bytes. No strings vs numbers vs booleans vs nulls — just a name, binary data, and contents. This simplicity makes it useful as a canonical container for cryptographic data, configuration, and structured binary payloads where type richness would be overhead.
+#
+# The closest inspiration is Bencoding (Bram Cohen, 2001), the serialization format inside BitTorrent .torrent files. Bencoding is minimal and deterministic — dictionaries must have sorted keys, so the same data always produces the same bytes, which is critical when the SHA-1 hash of a bencoded dictionary is the torrent's identity. Outline borrows this philosophy: deterministic sort for canonical comparison, so two Outlines with the same information produce identical binary output and identical hashes. Where Outline improves on Bencoding: a text form that is visible and useful in source code and documentation (Bencoding is barely legible for anything nontrivial), clear separation of name and value (Bencoding overloads byte strings for both keys and data), and a clean tree structure rather than Bencoding's four types (strings, integers, lists, dictionaries).
+#
+# MessagePack (Furuhashi, 2008), CBOR (RFC 7049, 2013), and Protocol Buffers (Google, 2008) solve a different problem. They are general-purpose serialization formats with rich type systems — integers, floats, strings, arrays, maps, booleans, nulls, extension types. Powerful, but more complex than needed when all your values are just bytes. Protobuf additionally requires schema files compiled ahead of time. Outline is deliberately simpler.
+#
+# Outline has two serialization formats:
+# - Text: indented lines like «name:"value"0a» using quoted encoding with data_to_quoted(). Visible in source code as triple-quoted strings, explains itself in markdown documentation, diffs alongside code in version control. The parser is lenient about indentation width (2 spaces, 4 spaces, tabs), accepts trailing whitespace, blank lines, and # comments at the end of a line or on a line of their own, and takes contents in any order, so pasted or hand-edited text tolerates reasonable sloppiness. The writer is canonical, sorted at every level.
+# - Binary: span-prefixed length encoding (name size, name, value size, value, contents size, contents) with no delimiters or escaping. Compact and unambiguous — data stays the same size on the wire, unlike JSON which inflates binary with escape sequences. Strict, too: the reader takes only what the writer writes, sorted at every level.
+#
+# One value type (bytes), one tree structure, deterministic sort, a text form and a binary form. It runs anywhere Python does, with no dependencies, no schema files, and no build step.
+#
+# Rules for designing an outline that you're going to use in your application:
+# - Names are short, lowercase, a-z and 0-9 only. Blank names are fine, duplicate names are fine.
+# - Insertion order cannot matter. Sorting is deterministic and automatic, so the same information always serializes to the same bytes. If your data has ordering that matters, encode the order explicitly--for example, wrap each item in an outline named "1", "2", "3".
+# - Names are labels, not data. Don't generate names from data or encode meaning in them; that's what values are for.
+# - Values are bytes, as raw and granular as possible. No compression, no structured formats, no length-prefixed sub-records; if you have structure, use nested contents instead of packing it into a value.
+# - No version numbers or vendor codes. An outline grows by adding new names; readers ignore names they don't recognize.
+# - Outlines are short packets, not bulk storage. A typical outline is well under 8 KB as binary.
+# - Outlines must be strict trees. No cycles, no shared subtrees--the same outline instance appearing in two places is rejected at serialization time. This matches the text form, which has no way to express sharing.
+
+_outline_name_pattern = re.compile(r"[a-z0-9]*")
+
+
+def has_outline_name(s: object) -> bool:
+    """True if s is a name an outline can have: lowercase letters and numerals, or blank; never raises, so a name from outside can be asked about first."""
+    # fullmatch rather than match with $, which would accept a trailing newline
+    return has_string(s) and _outline_name_pattern.fullmatch(s) is not None
+
+
+def check_outline_name(s: str) -> str:
+    """A guard: pass an outline name through, or raise because it has a character outside a-z and 0-9, or isn't a string at all."""
+    if not has_outline_name(s):
+        raise ValueError(f"not an outline name: {s!r}")
+    return s
+
+
+# the one empty Data every outline without a value holds, made on first use, so a program that never makes an outline never makes it
+_empty_value: Data | None = None
+
+
+def _no_value() -> Data:
+    """The value of an outline without one: a Data of no bytes, the same one for all of them."""
+    global _empty_value
+    if _empty_value is None:
+        _empty_value = Data(array=b"")
+    return _empty_value
+
+
+class Outline:
+    """An outline, with an optional name and value, and then contents added to it; the essay above says what it's for and how to design one."""
+
+    __slots__ = ("_contents", "_name", "_value")
+
+    def __init__(self, name: str | None = None, value: Data | None = None) -> None:
+        self._name = ""  # outlines can have names, [a-z0-9] only, or no name at all
+        # and hold one Data value, which holds no bytes when there's no value
+        self._value = _no_value()
+        # and hold contents, a list of lower nested outlines
+        self._contents: list[Outline] = []
+        # set the passed in name and value, if any
+        if name is not None:
+            self.set_name(name)
+        if value is not None:
+            self.set_value(value)
+
+    def length(self) -> int:
+        """How many we have."""
+        return len(self._contents)
+
+    # getters and setters for the name and value of this outline
+    #
+    # o.name() returns o's current name
+    # o.set_name("") sets o's name to blank, totally fine and useful in Outline
+    # o.set_name("key1") sets o's name to "key1" only numerals and lowercase letters are allowed
+    #
+    # o.value() gets the value, a Data, which holds no bytes if there's no value here (could still be contents, though!)
+    # o.set_value(Data(text="alice@example.com")) sets the value
+    # o.set_value(None) clears the value; outlines absolutely can be nameless and/or valueless
+    #
+    # the name [a-z0-9] requirement may seem restrictive, but prevents the case ambiguity you've likely encountered when examining a JavaScript object of HTTP headers (did the cloud provider lowercase? could there be "origin" *and* "Origin" in here?!!) and discourages overloading values into keys (if you want dots and slashes, build that into nested contents)
+
+    def name(self) -> str:
+        """This outline's name, blank if it has none."""
+        return self._name
+
+    def set_name(self, k: str | None) -> None:
+        """Set this outline's name, where None and blank are no name."""
+        # normalizing and validating through the shared helper
+        self._name = _blank_or_name(k)
+
+    def value(self) -> Data:
+        """This outline's value, a Data, which holds no bytes if there's no value."""
+        return self._value
+
+    def set_value(self, p: Data | None) -> None:
+        """Set this outline's value, or clear it with None."""
+        if p is None:
+            self._value = _no_value()  # set clear
+        elif isinstance(p, Data):
+            self._value = p  # set to the given Data
+        else:
+            raise TypeError(f"an outline's value is a Data or None: {p!r}")
+
+    def get(self, i: int) -> "Outline":
+        """The outline at index i in contents."""
+        if not (
+            isinstance(i, int)
+            and not isinstance(i, bool)
+            and 0 <= i < len(self._contents)
+        ):
+            raise IndexError(f"no outline {i!r} in {len(self._contents)}")
+        return self._contents[i]
+
+    def add(self, a: "Outline | str | Data") -> None:
+        """Add to this outline's contents: an outline you've already built, a name for a new outline with that name and no value, or a Data for a new unnamed outline with that value."""
+        if isinstance(a, Outline):
+            self._contents.append(a)  # add an outline you've already built
+        elif isinstance(a, str):
+            self._contents.append(Outline(a))  # add a new outline with this name
+        elif isinstance(a, Data):
+            # add a new unnamed outline with this value
+            self._contents.append(Outline("", a))
+        else:
+            raise TypeError(f"an outline adds an Outline, a name, or a Data: {a!r}")
+
+    def has(self, k: str | None = None) -> bool:
+        """True if contents includes an outline with name k."""
+        k = _blank_or_name(k)
+        return any(c.name() == k for c in self._contents)
+
+    # o.n() for "navigate": find the first outline in contents with name k, raise if not found
+    # o.m() for "make": like n, but creates the outline if it doesn't exist yet
+    # o.list() returns all unnamed contents
+    # o.list("type1") or filter out a named sublist, all contents named "type1"
+
+    def n(self, k: str | None = None) -> "Outline":
+        """Navigate: the first outline in contents with name k, or raise if there isn't one."""
+        k = _blank_or_name(k)
+        for c in self._contents:
+            if c.name() == k:
+                return c
+        raise KeyError(f"no outline named {k!r}")
+
+    def m(self, k: str | None = None) -> "Outline":
+        """Make: like n, but creates the outline if it doesn't exist yet."""
+        k = _blank_or_name(k)
+        if not self.has(k):
+            self.add(Outline(k))
+        return self.n(k)
+
+    def list(self, k: str | None = None) -> "list[Outline]":
+        """All the contents named k, or all the unnamed ones."""
+        k = _blank_or_name(k)
+        return [c for c in self._contents if c.name() == k]
+
+    def remove(self, k: str | None = None) -> None:
+        """Remove all outlines in contents with name k."""
+        k = _blank_or_name(k)
+        self._contents = [c for c in self._contents if c.name() != k]
+
+    def clear(self) -> None:
+        """Discard this outline's value and contents (but keep the name!)."""
+        self._value = _no_value()
+        self._contents = []
+
+    def sort(self) -> None:
+        """Sort all nested contents, at every level, so identical information produces identical serialization."""
+        # refuse a cycle or a shared subtree first, as the writers do, since sorting walks the whole tree
+        _outline_flat(self)
+
+        def leave(x: Outline, depth: int) -> None:
+            """Sort from the deepest levels up, since the walk leaves an outline only after all its contents, then sort this level."""
+            x._contents.sort(key=_outline_order)
+
+        _walk(self, None, leave)
+
+    def text(self) -> str:
+        """Text serialization, visible in source and documentation."""
+        return _outline_to_text(self)
+
+    def data(self) -> Data:
+        """Binary serialization, compact on the wire."""
+        return _outline_to_data(self)
+
+
+def _blank_or_name(k: str | None) -> str:
+    """Normalize and validate a name for the setter and all lookups: None becomes blank, and anything else must be a name."""
+    if k is None:
+        return ""
+    return check_outline_name(k)
+
+
+# text and data
+
+
+def _outline_to_text(o: Outline) -> str:
+    """Express an outline as indented lines of text for code, documentation, and diffs."""
+    _outline_flat(o)  # guard against user-supplied cycles before sort
+    # write a sorted copy, so the text is canonical and the outline the caller has stays as it is
+    o = _sorted_copy(o)
+    lines = []
+    # the indent at each depth, two spaces per level, each made once from the one above it
+    indents = [""]
+
+    def enter(x: Outline, depth: int) -> None:
+        """One line for each outline as the walk reaches it, so its contents follow it at a deeper indent."""
+        if depth == len(indents):
+            indents.append(indents[depth - 1] + "  ")
+        lines.append(indents[depth] + x.name() + ":" + data_to_quoted(x.value()) + "\n")
+
+    _walk(o, enter, None)
+    return "".join(lines)
+
+
+def text_to_outline(s: str) -> Outline:
+    """Parse a text outline into its object form."""
+    check_string(s)
+    # accept both \r\n and \n line endings, splitting at the line feed alone rather than with splitlines, which would also break at the other line endings unicode knows
+    lines = [line.removesuffix("\r") for line in s.split("\n")]
+    # skip blank lines, and lines that are only a comment, at any indent
+    lines = [
+        line for line in lines if has_text(line) and not re.match(r"[ \t]*#", line)
+    ]
+    if not lines:
+        raise ValueError(f"no outline in {s!r}")
+
+    # first pass: parse each line into (o, indent), where indent is the count of leading spaces or tabs
+    # each space or tab counts as one, so 2-space, 4-space, or tab indentation all work--but must be consistent within a parent's contents
+    parsed = []
+    for line in lines:
+        indent = re.match(r"[ \t]*", line).end()
+        c = cut(line[indent:], ":")
+        if not c.found:
+            # every line must have a colon separating name from quoted value
+            raise ValueError(f"no colon in {line!r}")
+
+        # find where the value ends: walk forward through c.after tracking quote state, stop at the first whitespace or # outside quotes
+        value_end = len(c.after)
+        in_quote = False
+        for j, ch in enumerate(c.after):
+            if ch == '"':
+                in_quote = not in_quote
+                continue
+            if not in_quote and ch in " \t#":
+                value_end = j
+                break
+        value_part = c.after[:value_end]
+        tail = c.after[value_end:]
+        # trailing content after the value must be whitespace, or a # comment to end of line, whatever characters it holds, which DOTALL lets the dot match
+        if not re.fullmatch(r"[ \t]*(#.*)?", tail, re.DOTALL):
+            raise ValueError(f"more after the value in {line!r}")
+
+        o = Outline()
+        o.set_name(c.before)
+        # a blank quoted form is no bytes, which is no value
+        o.set_value(quoted_to_data(value_part))
+        parsed.append((o, indent))
+
+    # second pass: build the tree with a stack that tracks the current ancestry and enforces indent consistency
+    # each stack entry is {o, indent, child_indent}: the outline, its own indent, and the indent its children will use (set when the first child appears, then required to match for further children)
+    root, root_indent = parsed[0]
+    if root_indent != 0:
+        # the root must be at zero indent--no leading whitespace
+        raise ValueError(f"the first line of an outline is indented: {s!r}")
+    stack = [{"o": root, "indent": 0, "child_indent": None}]
+    for o, indent in parsed[1:]:
+        # pop entries that can't be this line's parent (at our level or deeper)
+        while stack and stack[-1]["indent"] >= indent:
+            stack.pop()
+        if not stack:
+            # outdented past the root, which means there's a second root or worse
+            raise ValueError(f"more than one root in {s!r}")
+        parent = stack[-1]
+        if parent["child_indent"] is None:
+            # first child establishes the indent for this parent's contents
+            parent["child_indent"] = indent
+        elif parent["child_indent"] != indent:
+            # siblings must share the same indent; a mismatched indent is ambiguous
+            raise ValueError(f"uneven indent in {s!r}")
+        parent["o"].add(o)
+        stack.append({"o": o, "indent": indent, "child_indent": None})
+    return root
+
+
+def _outline_to_data(o: Outline) -> Data:
+    """Serialize an outline to binary data for disk or wire."""
+    _outline_flat(o)  # guard against user-supplied cycles before sort
+    # sort a copy depth-first before we walk the tree, so the output is deterministic, and the outline the caller has stays as it is
+    o = _sorted_copy(o)
+
+    # first pass: measure the exact size we'll need, so we can allocate one buffer and write into it
+    # each outline's contents size, measured on the way out of it, so the second pass looks it up in O(1) instead of recomputing
+    contents_sizes = {}
+    # at each depth, the bytes measured so far of the contents of the outline the walk is in there
+    measured = []
+    total = 0
+
+    def enter(x: Outline, depth: int) -> None:
+        """Start counting the bytes of the contents of the outline the walk has reached."""
+        if depth == len(measured):
+            measured.append(0)
+        measured[depth] = 0
+
+    def leave(x: Outline, depth: int) -> None:
+        """Measure x on the way out of it, once all its contents are measured."""
+        nonlocal total
+        # names are [a-z0-9], so string length equals utf-8 byte count
+        name_bytes = len(x.name())
+        value_bytes = x.value().size()
+        # every outline in x's contents has been measured, since the walk leaves x after them
+        contents_bytes = measured[depth]
+        contents_sizes[id(x)] = contents_bytes
+        size = (
+            len(_span_encode(name_bytes))
+            + name_bytes  # three (span, bytes) pairs: name, value, contents
+            + len(_span_encode(value_bytes))
+            + value_bytes
+            + len(_span_encode(contents_bytes))
+            + contents_bytes
+        )
+        if depth > 0:
+            # count x in the contents of the outline above it
+            measured[depth - 1] += size
+        else:
+            total = size
+
+    _walk(o, enter, leave)
+    buffer = bytearray(total)
+    w = 0  # walker, moves forward through buffer as we write bytes into it
+
+    # second pass: write the bytes in the same order we just measured
+    def write(b: bytes) -> None:
+        """Write bytes into the buffer, advancing the walker."""
+        nonlocal w
+        buffer[w : w + len(b)] = b
+        w += len(b)
+
+    def compose(x: Outline, depth: int) -> None:
+        """Write x's name, value, and contents span as the walk reaches it, so its contents follow."""
+        name = x.name().encode()
+        value = x.value().array()
+        write(_span_encode(len(name)))  # name span and bytes
+        write(name)
+        write(_span_encode(len(value)))  # value span and bytes
+        write(value)
+        # contents span, then each contained outline, which the walk reaches next
+        write(_span_encode(contents_sizes[id(x)]))
+
+    _walk(o, compose, None)
+    return Data(array=bytes(buffer))
+
+
+def data_to_outline(d: Data) -> Outline:
+    """Parse binary data into an outline object."""
+    a = _check_data(d).array()
+    w = 0  # walker, moves forward through a as we read bytes out of it
+
+    def span() -> int:
+        """Read a size prefix, advancing the walker."""
+        nonlocal w
+        value, bytes_read = _span_decode(a, w)
+        w += bytes_read
+        return value
+
+    def read(n: int) -> bytes:
+        """Read n bytes, advancing the walker."""
+        nonlocal w
+        if w + n > len(a):
+            raise ValueError(f"an outline needs {n} bytes at {w} of {len(a)}")
+        b = a[w : w + n]
+        w += n
+        return b
+
+    def start() -> dict:
+        """Start parsing one outline: name span + bytes, value span + bytes, then the contents span, which says where its contents end."""
+        o = Outline()
+
+        name_size = span()
+        if name_size > 0:
+            # a name's bytes are its text, which the setter checks is a-z and 0-9
+            o.set_name(Data(array=read(name_size)).text())
+
+        value_size = span()
+        if value_size > 0:
+            # zero size stays as the default, no value
+            o.set_value(Data(array=read(value_size)))
+
+        contents_size = span()
+        # previous will be the outline parsed just before the next one in its contents
+        return {"o": o, "end": w + contents_size, "previous": None}
+
+    # parse outlines inside outlines with a stack of our own, rather than calling ourselves for each level down: the outlines still being parsed, from the root down, each with where its contents end
+    open_outlines = [start()]
+    root = open_outlines[0]["o"]
+    while open_outlines:
+        top = open_outlines[-1]
+        if w < top["end"]:
+            # parse contained outlines until we've consumed exactly contents_size bytes
+            open_outlines.append(start())
+            continue
+        if w != top["end"]:
+            # overran or underran the contents region, input is malformed
+            raise ValueError("an outline's contents ran past their size")
+
+        # top is whole, its contents all parsed, so now it can be compared and added to the outline above it
+        open_outlines.pop()
+        if not open_outlines:
+            break  # top is the root
+        parent = open_outlines[-1]
+        previous = parent["previous"]
+        if previous is not None and _outline_compare(previous, top["o"]) > 0:
+            # the binary form is the canonical one, sorted at every level, so the same information is always the same bytes, and an outline's hash is its identity
+            raise ValueError("the contents of an outline in binary are out of order")
+        parent["o"].add(top["o"])
+        parent["previous"] = top["o"]
+    if w != len(a):
+        # trailing bytes after the root outline mean malformed input
+        raise ValueError(f"{len(a) - w} bytes after the outline")
+    return root
+
+
+# Every walk through an outline keeps a stack of its own, rather than calling itself for each level down. The writers, sort, and the check for cycles walk with _walk, which calls enter with each outline as it reaches it, and leave once all of that outline's contents are done, so what a recursive function would do before calling itself goes in enter, and what it would do after, in leave. Compare keeps a stack of the pairs it has yet to compare, and the binary reader a stack of the outlines it's still reading, each with where its contents end. The text reader has kept a stack of the outlines above the line it's reading since it was first written.
+#
+# The other walks were written recursively at first, which reads more simply, and moved to loops when depth came to matter. A walk that calls itself spends a frame of the language's own stack on every level, and that stack is small: a few thousand levels in JavaScript and in Rust, about a thousand in Python. An outline's binary form arrives from the wire, so a few kilobytes of nesting from anyone could run it out. Past that point, JavaScript and Python throw, Go, whose stacks grow to a gigabyte before it gives up, stops with a fatal error, and Rust aborts the whole process, which nothing can catch. A walk with a stack of its own needs only memory, so how deep an outline goes is limited by memory alone, how large its bytes can be by the span's cap, and no nesting from anywhere can crash it. In JavaScript, timed against the recursion they replaced, the loops are no slower.
+
+
+def _walk(
+    root: Outline,
+    enter: Callable[[Outline, int], None] | None,
+    leave: Callable[[Outline, int], None] | None,
+) -> None:
+    """Walk an outline depth first: call enter with each outline as the walk reaches it, and how many levels down it is, and leave with each outline and its depth after all its contents; either can be None."""
+    path = [root]  # the outlines from the root down to where the walk is
+    # and at each level, the index of the next outline to visit in its contents
+    following = [0]
+    if enter:
+        enter(root, 0)
+    while path:
+        level = len(path) - 1
+        o = path[level]
+        if following[level] < o.length():
+            # go down into the next outline in contents
+            c = o.get(following[level])
+            following[level] += 1
+            path.append(c)
+            following.append(0)
+            if enter:
+                enter(c, level + 1)
+        else:
+            path.pop()  # or back up, having visited them all
+            following.pop()
+            if leave:
+                leave(o, level)
+
+
+def _sorted_copy(o: Outline) -> Outline:
+    """A copy of an outline with its contents sorted at every level, deepest first, for the writers; the values are shared rather than copied, since a Data's bytes are the same either way."""
+    copies = []  # at each depth, the copy the walk is making there
+    contents = []  # and the copies of its contents, gathered to sort before they go in
+
+    def enter(x: Outline, depth: int) -> None:
+        """Make a copy of the outline the walk has reached, and start gathering copies of its contents."""
+        if depth == len(copies):
+            copies.append(None)
+            contents.append(None)
+        copies[depth] = Outline(x.name(), x.value())
+        contents[depth] = []
+
+    def leave(x: Outline, depth: int) -> None:
+        """Sort from the deepest levels up, since the walk leaves an outline only after all its contents, then sort this level."""
+        contents[depth].sort(key=_outline_order)
+        for c in contents[depth]:
+            copies[depth].add(c)
+        if depth > 0:
+            # and gather this copy, now whole, for the copy above it
+            contents[depth - 1].append(copies[depth])
+
+    _walk(o, enter, leave)
+    return copies[0]
+
+
+def _outline_flat(o: Outline) -> None:
+    """Make sure o doesn't have a cycle or duplicate."""
+    seen = set()
+
+    def enter(x: Outline, depth: int) -> None:
+        """Refuse an outline the walk has already reached once."""
+        if id(x) in seen:
+            # cycle or DAG: x already appears somewhere else in the tree, which the walk finds the first time it comes back to x, before it can go around again
+            raise ValueError(
+                "an outline appears twice in its tree, in a cycle or as a shared subtree"
+            )
+        seen.add(id(x))
+
+    _walk(o, enter, None)
+
+
+def _outline_compare(o1: Outline, o2: Outline) -> int:
+    """Compare two outlines for sort order: name first, then value, then nested contents pairwise down the whole tree."""
+    c = _outline_compare_here(o1, o2)
+    if c:
+        # names or values differ, which settles nearly every comparison a sort makes, with nothing made to do it
+        return c
+
+    # value tied, so we examine contents pairwise, with a stack of our own of the pairs still to compare, rather than calling ourselves for each level down
+    # the pair on top is next; a pair marked counts compares how many contents its two outlines hold, once all the pairs of their contents have tied
+    pending = []
+
+    def push(a: Outline, b: Outline) -> None:
+        """Compare contents pairwise at each index, the first pair on top, so it and everything inside it is compared before the second, and their counts after."""
+        pending.append((a, b, True))
+        for i in range(min(a.length(), b.length()) - 1, -1, -1):
+            pending.append((a.get(i), b.get(i), False))
+
+    push(o1, o2)
+    while pending:
+        a, b, counts = pending.pop()
+        if counts:
+            if a.length() < b.length():
+                return -1  # all shared contents match, fewer contents sorts first
+            if a.length() > b.length():
+                return 1
+        else:
+            c = _outline_compare_here(a, b)
+            if c:
+                # every caller sorts or checks deeper levels first, so contents at each level are already in order
+                return c
+            push(a, b)
+    return 0  # a complete and deep tie: identical name, value, and contents
+
+
+def _outline_compare_here(o1: Outline, o2: Outline) -> int:
+    """Compare two outlines by their names and values alone, for compare as it goes down the tree."""
+    # name first
+    if o1.name() < o2.name():
+        return -1  # o1 wins with a lighter name
+    if o1.name() > o2.name():
+        return 1  # o2 wins with its lighter name
+
+    # same name, so we move on to compare value; no value is an empty Data, which sorts before any value, since a shorter value sorts first
+    # python compares bytes the way an outline sorts them: byte by byte up to the shorter length, where the first differing byte decides the order, and then the shorter value first
+    a1 = o1.value().array()
+    a2 = o2.value().array()
+    if a1 < a2:
+        return -1
+    if a1 > a2:
+        return 1
+    return 0  # value tied, so compare goes on to examine contents pairwise
+
+
+# the order sort and the sorted copy put contents in, as the key python's sort takes
+_outline_order = functools.cmp_to_key(_outline_compare)
+
+
+# span
+
+# Span: a variable-length integer encoding for size prefixes in the binary format. Each byte contributes 7 bits of value; the high bit is 1 to continue, 0 to stop. Least-significant byte first (little-endian), matching LEB128 (WebAssembly, DWARF debug info) and Protocol Buffers' varint. Capped at 4 bytes (28 bits), giving a maximum value of 268,435,455 — about 256 MB. Outlines are designed to be small packets, not bulk storage, so this ceiling is generous. An Outline that approaches this size is almost certainly a misuse.
+#
+# The size of an outline's contents is a span too, the root's included, so the cap bounds an outline's whole binary form at about 256 MB: the writer refuses an outline whose bytes would pass it, and no span can tell the reader to expect more. That's still more than a program should take from outside. An outline takes as few as 3 bytes in its binary form and about 120 in memory, so reading bytes can take some 40 times their size, and running out of memory can end the process before Python gets the chance to raise a MemoryError. So a program that reads outlines from the wire caps how many bytes it accepts before it hands them to data_to_outline, the way a server caps the size of a request body.
+
+
+class Span(NamedTuple):
+    """What span_decode answers: the size the span says, and how many bytes the span took, so a reader can move past it."""
+
+    value: int
+    bytes_read: int
+
+
+def span_encode(n: int) -> Data:
+    """A size as a span, a Data of 1 to 4 bytes, the way an outline's binary form writes each size."""
+    return Data(array=_span_encode(n))
+
+
+def span_decode(data: Data, offset: int) -> Span:
+    """Read the span at an offset into a Data, answering its value and how many bytes it took, so a reader can move past it."""
+    return _span_decode(_check_data(data).array(), _check_count(offset))
+
+
+def _span_encode(n: int) -> bytes:
+    """A size as a span's bytes, at most 4."""
+    # has_int(n) and n >= 0 and under the cap, written out the way _check_count is; max 268,435,455 (~256 MB)
+    if not (isinstance(n, int) and not isinstance(n, bool) and 0 <= n < 0x10000000):
+        raise ValueError(f"not a size a span can hold: {n!r}")
+    b = bytearray()
+    while True:
+        y = n & 0x7F  # take the lowest 7 bits
+        n >>= 7  # shift them off, ready to take the next 7
+        if n > 0:
+            # set the high bit to signal "more bytes follow" to the decoder
+            y |= 0x80
+        b.append(y)
+        if n == 0:
+            return bytes(b)
+
+
+def _span_decode(a: bytes, offset: int) -> Span:
+    """Answer the span's value and how many bytes it took, so the caller can advance its cursor."""
+    n = 0
+    shift = 0
+    i = offset
+    # at most 4 bytes; more than that means malformed input
+    for count in range(4):
+        if i >= len(a):
+            raise ValueError(f"a span runs past the end at {i}")
+        y = a[i]
+        i += 1
+        n |= (y & 0x7F) << shift  # accumulate the 7 value bits at their proper place
+        if y & 0x80 == 0:
+            # high bit clear means this is the last byte
+            if count > 0 and y == 0:
+                # reject non-canonical encoding: a multi-byte span whose top byte contributes no bits could have fit in fewer bytes
+                raise ValueError(
+                    f"a span written longer than it needs to be at {offset}"
+                )
+            return Span(n, i - offset)
+        shift += 7
+    # ran past the 4 byte limit without finding a terminating byte
+    raise ValueError(f"a span longer than 4 bytes at {offset}")
+
+
+# quoted encoding
+
+# "Quoted" Encoding: A text format for binary data that mixes quoted ASCII text with base16
+#
+# «"Hello"0a» is easier to read than base16 '48656c6c6f0a'
+# «"A"00» shows the bits of a null terminator in a language-agnostic way, unlike 'A\0'
+# «» blank text is valid quoted encoding to express nothing, size zero bytes
+#
+# unlike the base encoding of Data, quoted is *not* round-trip!
+# a heuristic below balances brevity and readability when choosing which ASCII bytes to expose in quotes
+
+
+def _quotable(c: int) -> bool:
+    """True if the given character c is understandable to read in quotes: space through tilde, but not the double quotation mark itself, which is our delimiter!"""
+    return 0x20 <= c <= 0x7E and c != 0x22
+
+
+def data_to_quoted(data: Data) -> str:
+    """Encode the given Data as text in quoted encoding, where no bytes at all are blank text."""
+    a = _check_data(data).array()
+
+    text_count = sum(1 for c in a if _quotable(c))
+    if text_count * 2 < len(a):
+        # under half quotable? it's random or binary, just use base16; ties go to quoted
+        return data.base16()
+
+    s = []
+    i = 0
+    # alternate between:
+    while i < len(a):
+        if _quotable(a[i]):
+            # runs of quotable text, and
+            start = i
+            while i < len(a) and _quotable(a[i]):
+                i += 1
+            s.append('"' + a[start:i].decode("ascii") + '"')
+        else:
+            # runs of unquotable bytes in base16
+            start = i
+            while i < len(a) and not _quotable(a[i]):
+                i += 1
+            s.append(a[start:i].hex())
+    return "".join(s)
+
+
+def quoted_to_data(s: str) -> Data:
+    """Convert quoted text back to Data, where blank text is valid quoted encoding to describe zero bytes of nothing."""
+    check_string(s)
+    b = _quoted_bytes(s)
+    if b is None:
+        raise ValueError(f"not quoted encoding: {s!r}")
+    return Data(array=b)
+
+
+def _quoted_bytes(s: str) -> bytes | None:
+    """The bytes quoted text holds, or None when it isn't quoted encoding."""
+    # walk through the string, alternating between quoted sections and base16 pairs
+    b = bytearray()
+    i = 0
+    while i < len(s):
+        if s[i] == '"':
+            # opening quote starts a text section
+            i += 1
+            close = s.find('"', i)
+            if close == -1:
+                return None  # no closing quote
+            for ch in s[i:close]:
+                # strict: every character inside must be something data_to_quoted would have quoted
+                c = ord(ch)
+                if not _quotable(c):
+                    # rejects control chars, high bytes, unicode, and the quote char itself
+                    return None
+                b.append(c)  # quotable guarantees ASCII, one byte per char
+            i = close + 1
+        else:
+            # outside quotes, consume base16 digit pairs
+            if i + 1 >= len(s):
+                return None  # a lone base16 digit with no pair is invalid
+            c0 = s[i]
+            c1 = s[i + 1]
+            if c0 not in _base16_digits or c1 not in _base16_digits:
+                return None  # lowercase base16 only
+            b.append(int(c0 + c1, 16))
+            i += 2
+    return bytes(b)
+
+
+_base16_digits = "0123456789abcdef"
