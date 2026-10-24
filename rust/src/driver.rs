@@ -155,6 +155,23 @@ fn run(call: &str, args: &[Value]) -> Result<Value, String> {
                 "pieceHash": base16(&hashes.piece_hash),
             }))
         }
+        "hasOutlineName" => Ok(json!(crate::has_outline_name(text(args, 0)?))),
+        "checkOutlineName" => Ok(json!(crate::check_outline_name(text(args, 0)?))),
+        "Outline" => outline_method(args),
+        "textToOutline" => crate::text_to_outline(text(args, 0)?)
+            .map(|o| outline_json(&o))
+            .map_err(|e| e.to_string()),
+        "dataToOutline" => crate::data_to_outline(&bytes(args, 0)?)
+            .map(|o| outline_json(&o))
+            .map_err(|e| e.to_string()),
+        "spanEncode" => Ok(base16(&crate::span_encode(index(args, 0)?))),
+        "spanDecode" => crate::span_decode(&bytes(args, 0)?, index(args, 1)?)
+            .map(|s| json!({"value": s.value, "bytesRead": s.bytes_read}))
+            .map_err(|e| e.to_string()),
+        "dataToQuoted" => Ok(json!(crate::data_to_quoted(&bytes(args, 0)?))),
+        "quotedToData" => crate::quoted_to_data(text(args, 0)?)
+            .map(|d| base16(&d))
+            .map_err(|e| e.to_string()),
         _ => Err(format!("unknown function: {call}")),
     }
 }
@@ -265,6 +282,94 @@ fn bin_method(args: &[Value]) -> Result<Value, String> {
         "data" => Ok(base16(&b.data())),
         method => Err(format!("unknown method of Bin: {method}")),
     }
+}
+
+/// An Outline in the protocol takes the outline to start from, or a name to make one with, then the name of a method and its arguments, like [outline, "text"] or [outline, "list", "jar"]. A method that answers nothing, like a setter or sort, answers the outline after it.
+fn outline_method(args: &[Value]) -> Result<Value, String> {
+    let start = args
+        .first()
+        .ok_or("argument 0 must be an outline or a name")?;
+    let mut o = match outline_from(start)? {
+        Some(o) => o,
+        None => crate::Outline::new(name(args, 0)?), // an outline arrives already made from its json; a name, or null for none, makes one here
+    };
+    let setting = args.len() > 2; // the protocol's name and value get with no argument and set with one, the way javascript's do, where this edition has a setter of each
+    match text(args, 1)? {
+        "length" => return Ok(json!(o.length())),
+        "name" if !setting => return Ok(json!(o.name())),
+        "name" => o.set_name(name(args, 2)?),
+        "value" if !setting => return Ok(base16(o.value())),
+        "value" => o.set_value(value(args, 2)?),
+        "get" => return Ok(outline_json(o.get(index(args, 2)?))),
+        "add" => {
+            let a = &args[2];
+            if let Some(c) = outline_from(a)? {
+                o.add(c);
+            } else if let Some(d) = tagged(a) {
+                o.add_value(d?);
+            } else {
+                o.add_name(text(args, 2)?);
+            }
+        }
+        "has" => return Ok(json!(o.has(name(args, 2)?))),
+        "n" => return Ok(outline_json(o.n(name(args, 2)?))),
+        "m" => return Ok(outline_json(o.m(name(args, 2)?))),
+        "list" => {
+            return Ok(json!(
+                o.list(name(args, 2)?)
+                    .into_iter()
+                    .map(outline_json)
+                    .collect::<Vec<_>>()
+            ));
+        }
+        "remove" => o.remove(name(args, 2)?),
+        "clear" => o.clear(),
+        "sort" => o.sort(),
+        "text" => return Ok(json!(o.text())),
+        "data" => return Ok(base16(&o.data())),
+        method => return Err(format!("unknown method of Outline: {method}")),
+    }
+    Ok(outline_json(&o))
+}
+
+/// An outline from the protocol's json, {name, value, contents}, its value as tagged bytes and its contents as outlines, in the order the outline holds them. None if v isn't one.
+fn outline_from(v: &Value) -> Result<Option<crate::Outline>, String> {
+    let Some(contents) = v["contents"].as_array() else {
+        return Ok(None);
+    };
+    let mut o = crate::Outline::new(name(&[v["name"].clone()], 0)?);
+    o.set_value(value(&[v["value"].clone()], 0)?);
+    for c in contents {
+        o.add(outline_from(c)?.ok_or_else(|| format!("not an outline: {c}"))?);
+    }
+    Ok(Some(o))
+}
+
+/// An outline as the protocol carries it, {name, value, contents}, in its order, not sorted.
+fn outline_json(o: &crate::Outline) -> Value {
+    let contents: Vec<Value> = (0..o.length()).map(|i| outline_json(o.get(i))).collect();
+    json!({"name": o.name(), "value": base16(o.value()), "contents": contents})
+}
+
+/// Argument i as an outline name, where null or a missing argument is "", the blank name, since this edition has no null.
+fn name(args: &[Value], i: usize) -> Result<&str, String> {
+    match args.get(i) {
+        None | Some(Value::Null) => Ok(""),
+        Some(_) => text(args, i),
+    }
+}
+
+/// Argument i as an outline's value, where null is a Data of no bytes, no value.
+fn value(args: &[Value], i: usize) -> Result<crate::Data, String> {
+    match args.get(i) {
+        Some(Value::Null) => Ok(crate::Data::from(Vec::new())),
+        _ => bytes(args, i),
+    }
+}
+
+/// Argument i as an index or a size, zero or more, or an error naming the argument.
+fn index(args: &[Value], i: usize) -> Result<usize, String> {
+    usize::try_from(count(args, i)?).map_err(|e| e.to_string())
 }
 
 /// What every edition measures alike: the pieces, and the stripes the tip hash reads.

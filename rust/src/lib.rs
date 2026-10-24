@@ -2131,3 +2131,889 @@ fn finish(status: &mut HashStatus) {
     status.update_time = now();
     status.duration = Some(status.update_time - status.start_time);
 }
+
+// outline
+
+// Outline: A tree structure where each outline has a name (string), a value (Data, empty for none), and contents (other outlines).
+//
+// An Outline is like JSON, but stripped down to just one type of value: bytes. No strings vs numbers vs booleans vs nulls — just a name, binary data, and contents. This simplicity makes it useful as a canonical container for cryptographic data, configuration, and structured binary payloads where type richness would be overhead.
+//
+// The closest inspiration is Bencoding (Bram Cohen, 2001), the serialization format inside BitTorrent .torrent files. Bencoding is minimal and deterministic — dictionaries must have sorted keys, so the same data always produces the same bytes, which is critical when the SHA-1 hash of a bencoded dictionary is the torrent's identity. Outline borrows this philosophy: deterministic sort for canonical comparison, so two Outlines with the same information produce identical binary output and identical hashes. Where Outline improves on Bencoding: a text form that is visible and useful in source code and documentation (Bencoding is barely legible for anything nontrivial), clear separation of name and value (Bencoding overloads byte strings for both keys and data), and a clean tree structure rather than Bencoding's four types (strings, integers, lists, dictionaries).
+//
+// MessagePack (Furuhashi, 2008), CBOR (RFC 7049, 2013), and Protocol Buffers (Google, 2008) solve a different problem. They are general-purpose serialization formats with rich type systems — integers, floats, strings, arrays, maps, booleans, nulls, extension types. Powerful, but more complex than needed when all your values are just bytes. Protobuf additionally requires schema files compiled ahead of time. Outline is deliberately simpler.
+//
+// Outline has two serialization formats:
+// - Text: indented lines like «name:"value"0a» using quoted encoding with data_to_quoted(). Visible in source code as raw string literals, explains itself in markdown documentation, diffs alongside code in version control. The parser is lenient about indentation width (2 spaces, 4 spaces, tabs), accepts trailing whitespace, blank lines, and # comments at the end of a line or on a line of their own, and takes contents in any order, so pasted or hand-edited text tolerates reasonable sloppiness. The writer is canonical, sorted at every level.
+// - Binary: span-prefixed length encoding (name size, name, value size, value, contents size, contents) with no delimiters or escaping. Compact and unambiguous — data stays the same size on the wire, unlike JSON which inflates binary with escape sequences. Strict, too: the reader takes only what the writer writes, sorted at every level.
+//
+// One value type (bytes), one tree structure, deterministic sort, a text form and a binary form. It runs anywhere Rust does, with no dependencies, no schema files, and no build step.
+//
+// Rules for designing an outline that you're going to use in your application:
+// - Names are short, lowercase, a-z and 0-9 only. Blank names are fine, duplicate names are fine.
+// - Insertion order cannot matter. Sorting is deterministic and automatic, so the same information always serializes to the same bytes. If your data has ordering that matters, encode the order explicitly--for example, wrap each item in an outline named "1", "2", "3".
+// - Names are labels, not data. Don't generate names from data or encode meaning in them; that's what values are for.
+// - Values are bytes, as raw and granular as possible. No compression, no structured formats, no length-prefixed sub-records; if you have structure, use nested contents instead of packing it into a value.
+// - No version numbers or vendor codes. An outline grows by adding new names; readers ignore names they don't recognize.
+// - Outlines are short packets, not bulk storage. A typical outline is well under 8 KB as binary.
+// - Outlines must be strict trees. No cycles, no shared subtrees. In Rust an outline owns its contents, so the compiler rules out both before anything runs. This matches the text form, which has no way to express sharing.
+
+/// True if `s` is a name an outline can have: lowercase letters and numerals, or blank. Never panics, so a name from outside can be asked about first.
+///
+/// ```
+/// assert!(zootella_ergo::has_outline_name("key1"));
+/// assert!(!zootella_ergo::has_outline_name("Key1"));
+/// ```
+pub fn has_outline_name(s: &str) -> bool {
+    s.bytes()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+}
+
+/// A guard: pass an outline name through.
+///
+/// # Panics
+///
+/// Panics if `s` has a character outside a-z and 0-9, which is a bug in the caller; ask [`has_outline_name`] first about a name from outside.
+pub fn check_outline_name(s: &str) -> &str {
+    assert!(has_outline_name(s), "not an outline name: {s:?}");
+    s
+}
+
+/// The value of an outline without one: a Data of no bytes, the same one for all of them, made on first use, so a program that never makes an outline never makes it.
+fn no_value() -> Data {
+    static EMPTY: std::sync::OnceLock<Data> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(|| Data::from(Vec::new())).clone()
+}
+
+/// A tree of outlines, each with a name, a value, and contents, made with [`Outline::new`] and filled with [`add`](Outline::add), [`add_name`](Outline::add_name), [`add_value`](Outline::add_value), and [`m`](Outline::m), which makes as it navigates, so a chain builds as it goes. The essay above it in the source says what it's for and how to design one.
+///
+/// ```
+/// use zootella_ergo::{Data, Outline, text_to_outline};
+/// let mut o = Outline::new("orchard");
+/// o.m("basket").m("color").set_value(Data::from_text("red"));
+/// assert_eq!(o.text(), "orchard:\n  basket:\n    color:\"red\"\n");
+/// assert_eq!(text_to_outline(&o.text()).unwrap().data(), o.data());
+/// ```
+pub struct Outline {
+    /// Outlines can have names, \[a-z0-9\] only, or no name at all.
+    name: String,
+    /// And hold one Data value, which holds no bytes when there's no value.
+    value: Data,
+    /// And hold contents, lower nested outlines, which this one owns.
+    contents: Vec<Outline>,
+}
+
+impl Outline {
+    /// An outline with a name, or none with `""`, and then contents added to it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` isn't a name, which is a bug in the caller; ask [`has_outline_name`] first.
+    pub fn new(name: &str) -> Outline {
+        Outline {
+            name: check_outline_name(name).to_string(),
+            value: no_value(),
+            contents: Vec::new(),
+        }
+    }
+
+    /// How many outlines this one holds in its contents.
+    pub fn length(&self) -> usize {
+        self.contents.len()
+    }
+
+    // getters and setters for the name and value of this outline
+    //
+    // o.name() returns o's current name
+    // o.set_name("") sets o's name to blank, totally fine and useful in Outline
+    // o.set_name("key1") sets o's name to "key1" only numerals and lowercase letters are allowed
+    //
+    // o.value() gets the value, a Data, which holds no bytes if there's no value here (could still be contents, though!)
+    // o.set_value(Data::from_text("alice@example.com")) sets the value
+    // o.set_value(Data::from(Vec::new())) clears the value, since a Data of no bytes is no value; outlines absolutely can be nameless and/or valueless
+    //
+    // the name [a-z0-9] requirement may seem restrictive, but prevents the case ambiguity you've likely encountered when examining a JavaScript object of HTTP headers (did the cloud provider lowercase? could there be "origin" *and* "Origin" in here?!!) and discourages overloading values into keys (if you want dots and slashes, build that into nested contents)
+
+    /// This outline's name, blank if it has none.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// Set this outline's name, where `""` is no name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `k` isn't a name, which is a bug in the caller; ask [`has_outline_name`] first.
+    pub fn set_name(&mut self, k: &str) {
+        self.name = check_outline_name(k).to_string();
+    }
+    /// This outline's value, a Data, which holds no bytes if there's no value.
+    pub fn value(&self) -> &Data {
+        &self.value
+    }
+    /// Set this outline's value, where a Data of no bytes is no value.
+    pub fn set_value(&mut self, d: Data) {
+        self.value = d;
+    }
+
+    /// The outline at index `i` in contents.
+    ///
+    /// # Panics
+    ///
+    /// Panics if there's no outline at `i`, which is a bug in the caller; ask [`length`](Outline::length) first.
+    pub fn get(&self, i: usize) -> &Outline {
+        assert!(
+            i < self.contents.len(),
+            "no outline {i} in {}",
+            self.contents.len()
+        );
+        &self.contents[i]
+    }
+    /// The outline at index `i` in contents, to change.
+    ///
+    /// # Panics
+    ///
+    /// Panics like [`get`](Outline::get).
+    pub fn get_mut(&mut self, i: usize) -> &mut Outline {
+        assert!(
+            i < self.contents.len(),
+            "no outline {i} in {}",
+            self.contents.len()
+        );
+        &mut self.contents[i]
+    }
+    /// Add an outline you've already built to this outline's contents.
+    pub fn add(&mut self, c: Outline) {
+        self.contents.push(c);
+    }
+    /// Add a new outline with this name and no value to this outline's contents.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `k` isn't a name, which is a bug in the caller.
+    pub fn add_name(&mut self, k: &str) {
+        self.add(Outline::new(k));
+    }
+    /// Add a new unnamed outline with this value to this outline's contents.
+    pub fn add_value(&mut self, d: Data) {
+        let mut c = Outline::new("");
+        c.set_value(d);
+        self.add(c);
+    }
+    /// True if contents includes an outline with name `k`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `k` isn't a name, since lookups validate too, so a mistake is a loud error instead of a silent "not found".
+    pub fn has(&self, k: &str) -> bool {
+        check_outline_name(k);
+        self.contents.iter().any(|c| c.name == k)
+    }
+
+    // o.n() for "navigate": find the first outline in contents with name k, panic if not found
+    // o.m() for "make": like n, but creates the outline if it doesn't exist yet
+    // o.list("") returns all unnamed contents
+    // o.list("type1") or filter out a named sublist, all contents named "type1"
+
+    /// Navigate to the first outline in contents with name `k`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if there isn't one, or `k` isn't a name, which is a bug in the caller; ask [`has`](Outline::has) first.
+    pub fn n(&self, k: &str) -> &Outline {
+        check_outline_name(k);
+        match self.contents.iter().find(|c| c.name == k) {
+            Some(c) => c,
+            None => panic!("no outline named {k:?}"),
+        }
+    }
+    /// Navigate to the first outline in contents with name `k`, to change.
+    ///
+    /// # Panics
+    ///
+    /// Panics like [`n`](Outline::n).
+    pub fn n_mut(&mut self, k: &str) -> &mut Outline {
+        check_outline_name(k);
+        match self.contents.iter_mut().find(|c| c.name == k) {
+            Some(c) => c,
+            None => panic!("no outline named {k:?}"),
+        }
+    }
+    /// Make: like [`n_mut`](Outline::n_mut), but creates the outline if it doesn't exist yet, so a chain like `o.m("basket").m("color").set_value(d)` builds as it goes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `k` isn't a name, which is a bug in the caller.
+    pub fn m(&mut self, k: &str) -> &mut Outline {
+        if !self.has(k) {
+            self.add_name(k);
+        }
+        self.n_mut(k)
+    }
+    /// All the contents named `k`, or with `""`, all the unnamed ones.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `k` isn't a name, which is a bug in the caller.
+    pub fn list(&self, k: &str) -> Vec<&Outline> {
+        check_outline_name(k);
+        self.contents.iter().filter(|c| c.name == k).collect()
+    }
+    /// Remove all outlines in contents with name `k`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `k` isn't a name, which is a bug in the caller.
+    pub fn remove(&mut self, k: &str) {
+        check_outline_name(k);
+        self.contents.retain(|c| c.name != k);
+    }
+    /// Discard this outline's value and contents (but keep the name!).
+    pub fn clear(&mut self) {
+        self.value = no_value();
+        self.contents = Vec::new();
+    }
+
+    /// Sort all nested contents, at every level, so identical information produces identical serialization.
+    pub fn sort(&mut self) {
+        // sort with a stack of our own, of outlines taken out of the outline above them, each with the contents it has yet to sort and the ones it has, rather than calling ourselves for each level down
+        struct Frame {
+            o: Outline,
+            pending: Vec<Outline>, // the outline's contents yet to sort, last first, so the first comes off the end
+            done: Vec<Outline>,    // and the ones sorted all the way down, in their original order
+        }
+        let frame = |mut o: Outline| {
+            let mut pending = std::mem::take(&mut o.contents);
+            pending.reverse();
+            let done = Vec::with_capacity(pending.len());
+            Frame { o, pending, done }
+        };
+        let mut stack = vec![frame(std::mem::take(self))];
+        while let Some(top) = stack.last_mut() {
+            if let Some(c) = top.pending.pop() {
+                stack.push(frame(c)); // go down into the next outline in contents
+            } else {
+                let mut f = stack.pop().expect("the frame just looked at"); // or back up, having sorted them all
+                f.done.sort_by(outline_compare); // sort from the deepest levels up, since an outline comes back up only after all its contents, then sort this level
+                f.o.contents = f.done;
+                match stack.last_mut() {
+                    Some(parent) => parent.done.push(f.o),
+                    None => *self = f.o, // the root, sorted, back where it was
+                }
+            }
+        }
+    }
+
+    /// The outline as indented lines of text, its text serialization, visible in source and documentation.
+    pub fn text(&self) -> String {
+        outline_to_text(self)
+    }
+    /// The outline as bytes, its binary serialization, compact on the wire.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the bytes would pass the span's cap of about 256 MB.
+    pub fn data(&self) -> Data {
+        outline_to_data(self)
+    }
+}
+
+/// An outline with no name, no value, and no contents.
+impl Default for Outline {
+    fn default() -> Outline {
+        Outline::new("")
+    }
+}
+
+/// Free an outline's contents with a stack of its own, rather than letting each outline drop its contents in turn, which is a recursion that a deep enough outline would run off the end of the stack.
+impl Drop for Outline {
+    fn drop(&mut self) {
+        let mut pending = std::mem::take(&mut self.contents);
+        while let Some(mut o) = pending.pop() {
+            pending.append(&mut o.contents); // take its contents before it goes, so it goes holding none
+        }
+    }
+}
+
+/// An outline's name, its value, and how many outlines it holds, rather than all of them, which a deep outline would make a recursion of.
+impl std::fmt::Debug for Outline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Outline")
+            .field("name", &self.name)
+            .field("value", &self.value)
+            .field("length", &self.contents.len())
+            .finish()
+    }
+}
+
+/// Text or bytes an outline reader refused, because they aren't an outline, with why, like a line without a colon, contents out of order, or a span written longer than it needs to be, so a log can show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutlineError(pub String);
+
+impl std::fmt::Display for OutlineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for OutlineError {}
+
+/// A value in quoted encoding the text reader couldn't read, as why the text isn't an outline.
+impl From<DataError> for OutlineError {
+    fn from(e: DataError) -> OutlineError {
+        OutlineError(e.to_string())
+    }
+}
+
+// text and data
+
+/// Express an outline as indented lines of text for code, documentation, and diffs.
+fn outline_to_text(o: &Outline) -> String {
+    let o = sorted_copy(o); // write a sorted copy, so the text is canonical and the outline the caller has stays as it is
+    let mut s = String::new();
+    let mut indents = vec![String::new()]; // the indent at each depth, two spaces per level, each made once from the one above it
+    walk(&o, |step| {
+        if let Step::Enter(x, depth) = step {
+            if depth == indents.len() {
+                let indent = format!("{}  ", indents[depth - 1]);
+                indents.push(indent);
+            }
+            // one line for each outline as the walk reaches it, so its contents follow it at a deeper indent
+            s.push_str(&indents[depth]);
+            s.push_str(&x.name);
+            s.push(':');
+            s.push_str(&data_to_quoted(&x.value));
+            s.push('\n');
+        }
+    });
+    s
+}
+
+/// Parse a text outline into its object form, or an [`OutlineError`] because the text isn't one. It reads leniently, the way the essay above it in the source describes, for text a person or an agent wrote by hand.
+///
+/// ```
+/// let o = zootella_ergo::text_to_outline("orchard:\n  tree:\"apple\"  # a comment\n").unwrap();
+/// assert_eq!(o.n("tree").value().text().unwrap(), "apple");
+/// ```
+pub fn text_to_outline(s: &str) -> Result<Outline, OutlineError> {
+    // accept both \r\n and \n line endings, splitting at the line feed alone rather than at every line ending unicode knows, and skip blank lines, and lines that are only a comment, at any indent
+    let lines: Vec<&str> = s
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .filter(|line| has_text(line) && !line.trim_start_matches([' ', '\t']).starts_with('#'))
+        .collect();
+    if lines.is_empty() {
+        return Err(OutlineError(format!("no outline in {s:?}")));
+    }
+
+    // first pass: parse each line into (o, indent), where indent is the count of leading spaces or tabs
+    // each space or tab counts as one, so 2-space, 4-space, or tab indentation all work--but must be consistent within a parent's contents
+    let mut parsed = Vec::with_capacity(lines.len());
+    for line in lines {
+        let indent = line.len() - line.trim_start_matches([' ', '\t']).len();
+        let c = cut(&line[indent..], ":");
+        if !c.found {
+            return Err(OutlineError(format!("no colon in {line:?}"))); // every line must have a colon separating name from quoted value
+        }
+
+        // find where the value ends: walk forward through c.after tracking quote state, stop at the first whitespace or # outside quotes
+        // a byte at a time, since each character it looks for is ascii, and in utf-8 an ascii byte is never part of another character
+        let mut value_end = c.after.len();
+        let mut in_quote = false;
+        for (j, ch) in c.after.bytes().enumerate() {
+            if ch == b'"' {
+                in_quote = !in_quote;
+                continue;
+            }
+            if !in_quote && matches!(ch, b' ' | b'\t' | b'#') {
+                value_end = j;
+                break;
+            }
+        }
+        let value_part = &c.after[..value_end];
+        let tail = c.after[value_end..].trim_start_matches([' ', '\t']);
+        if !(tail.is_empty() || tail.starts_with('#')) {
+            return Err(OutlineError(format!("more after the value in {line:?}"))); // trailing content after the value must be whitespace, or a # comment to end of line, whatever characters it holds
+        }
+
+        if !has_outline_name(c.before) {
+            return Err(OutlineError(format!("not an outline name: {:?}", c.before)));
+        }
+        let mut o = Outline::new(c.before);
+        o.set_value(quoted_to_data(value_part)?); // a blank quoted form is no bytes, which is no value
+        parsed.push((o, indent));
+    }
+
+    // second pass: build the tree with a stack that tracks the current ancestry and enforces indent consistency
+    // each entry is the outline, its own indent, and the indent its children will use (set when the first child appears, then required to match for further children); an entry owns its outline until the line after its last child, when it goes into the outline above it
+    struct Entry {
+        o: Outline,
+        indent: usize,
+        child_indent: Option<usize>,
+    }
+    let mut parsed = parsed.into_iter();
+    let (root, root_indent) = parsed.next().expect("a line, since the text has one");
+    if root_indent != 0 {
+        return Err(OutlineError(format!(
+            "the first line of an outline is indented: {s:?}"
+        ))); // the root must be at zero indent--no leading whitespace
+    }
+    let mut stack = vec![Entry {
+        o: root,
+        indent: 0,
+        child_indent: None,
+    }];
+    for (o, indent) in parsed {
+        // pop entries that can't be this line's parent (at our level or deeper), each into the outline above it, now that it has all its contents
+        while stack.last().expect("the root, which stays").indent >= indent {
+            if stack.len() == 1 {
+                return Err(OutlineError(format!("more than one root in {s:?}"))); // outdented past the root, which means there's a second root or worse
+            }
+            let done = stack.pop().expect("an entry above the root");
+            stack.last_mut().expect("the root").o.add(done.o);
+        }
+        let parent = stack.last_mut().expect("the root, which stays");
+        match parent.child_indent {
+            None => parent.child_indent = Some(indent), // first child establishes the indent for this parent's contents
+            Some(i) if i != indent => {
+                return Err(OutlineError(format!("uneven indent in {s:?}"))); // siblings must share the same indent; a mismatched indent is ambiguous
+            }
+            Some(_) => {}
+        }
+        stack.push(Entry {
+            o,
+            indent,
+            child_indent: None,
+        });
+    }
+    // and the rest, each into the outline above it, down to the root
+    while stack.len() > 1 {
+        let done = stack.pop().expect("an entry above the root");
+        stack.last_mut().expect("the root").o.add(done.o);
+    }
+    Ok(stack.pop().expect("the root").o)
+}
+
+/// Serialize an outline to binary data for disk or wire.
+fn outline_to_data(o: &Outline) -> Data {
+    let o = sorted_copy(o); // sort a copy depth-first before we walk the tree, so the output is deterministic, and the outline the caller has stays as it is
+
+    // first pass: measure the exact size we'll need, so we can allocate one buffer and write into it
+    let mut contents_sizes: std::collections::HashMap<*const Outline, usize> =
+        std::collections::HashMap::new(); // each outline's contents size, measured on the way out of it, so the second pass looks it up in O(1) instead of recomputing
+    let mut measured: Vec<usize> = Vec::new(); // at each depth, the bytes measured so far of the contents of the outline the walk is in there
+    let mut total = 0;
+    walk(&o, |step| match step {
+        Step::Enter(_, depth) => {
+            measured.truncate(depth);
+            measured.push(0);
+        }
+        Step::Leave(x, depth) => {
+            let name_bytes = x.name.len(); // names are [a-z0-9], so string length equals utf-8 byte count
+            let value_bytes = x.value.size();
+            let contents_bytes = measured[depth]; // every outline in x's contents has been measured, since the walk leaves x after them
+            contents_sizes.insert(std::ptr::from_ref(x), contents_bytes);
+            let size = span_bytes(name_bytes).len() // three (span, bytes) pairs: name, value, contents
+                + name_bytes
+                + span_bytes(value_bytes).len()
+                + value_bytes
+                + span_bytes(contents_bytes).len()
+                + contents_bytes;
+            if depth > 0 {
+                measured[depth - 1] += size; // count x in the contents of the outline above it
+            } else {
+                total = size;
+            }
+        }
+    });
+
+    // second pass: write the bytes in the same order we just measured, into one buffer made the exact size
+    let mut buffer = Vec::with_capacity(total);
+    walk(&o, |step| {
+        if let Step::Enter(x, _) = step {
+            buffer.extend_from_slice(&span_bytes(x.name.len())); // name span and bytes
+            buffer.extend_from_slice(x.name.as_bytes());
+            buffer.extend_from_slice(&span_bytes(x.value.size())); // value span and bytes
+            buffer.extend_from_slice(x.value.array());
+            buffer.extend_from_slice(&span_bytes(contents_sizes[&std::ptr::from_ref(x)])); // contents span, then each contained outline, which the walk reaches next
+        }
+    });
+    Data::from(buffer)
+}
+
+/// Parse binary data into an outline object, or an [`OutlineError`] because the bytes aren't exactly what [`Outline::data`] writes. It's strict, the way the essay above it in the source describes, for bytes from the wire.
+///
+/// ```
+/// use zootella_ergo::{Data, Outline, data_to_outline};
+/// let mut o = Outline::new("x");
+/// o.add_name("a");
+/// assert_eq!(data_to_outline(&o.data()).unwrap().text(), "x:\n  a:\n");
+/// assert!(data_to_outline(&Data::from_base16("000000ff").unwrap()).is_err()); // a byte after the outline
+/// ```
+pub fn data_to_outline(d: &Data) -> Result<Outline, OutlineError> {
+    let mut r = Reader { a: d.array(), w: 0 };
+
+    // parse outlines inside outlines with a stack of our own, rather than calling ourselves for each level down: the outlines still being parsed, from the root down, each with where its contents end
+    let mut open = vec![r.start()?];
+    let root = loop {
+        let end = open.last().expect("the outline being parsed").1;
+        if r.w < end {
+            open.push(r.start()?); // parse contained outlines until we've consumed exactly the contents span's bytes
+            continue;
+        }
+        if r.w != end {
+            return Err(OutlineError(
+                "an outline's contents ran past their size".to_string(),
+            )); // overran or underran the contents region, input is malformed
+        }
+
+        // top is whole, its contents all parsed, so now it can be compared and added to the outline above it
+        let (top, _) = open.pop().expect("the outline being parsed");
+        let Some((parent, _)) = open.last_mut() else {
+            break top; // top is the root
+        };
+        if let Some(previous) = parent.contents.last() {
+            if outline_compare(previous, &top) == std::cmp::Ordering::Greater {
+                return Err(OutlineError(
+                    "the contents of an outline in binary are out of order".to_string(),
+                )); // the binary form is the canonical one, sorted at every level, so the same information is always the same bytes, and an outline's hash is its identity
+            }
+        }
+        parent.add(top);
+    };
+    if r.w != r.a.len() {
+        return Err(OutlineError(format!(
+            "{} bytes after the outline",
+            r.a.len() - r.w
+        ))); // trailing bytes after the root outline mean malformed input
+    }
+    Ok(root)
+}
+
+/// The bytes the binary reader reads, and the walker that moves forward through them as it reads.
+struct Reader<'a> {
+    a: &'a [u8],
+    w: usize,
+}
+
+impl<'a> Reader<'a> {
+    /// Read a size prefix, advancing the walker.
+    fn span(&mut self) -> Result<usize, OutlineError> {
+        let s = read_span(self.a, self.w)?;
+        self.w += s.bytes_read;
+        Ok(s.value)
+    }
+    /// Read n bytes, advancing the walker.
+    fn read(&mut self, n: usize) -> Result<&'a [u8], OutlineError> {
+        if self.w + n > self.a.len() {
+            return Err(OutlineError(format!(
+                "an outline needs {n} bytes at {} of {}",
+                self.w,
+                self.a.len()
+            )));
+        }
+        let b = &self.a[self.w..self.w + n];
+        self.w += n;
+        Ok(b)
+    }
+    /// Start parsing one outline: name span + bytes, value span + bytes, then the contents span, which says where its contents end.
+    fn start(&mut self) -> Result<(Outline, usize), OutlineError> {
+        let mut o = Outline::new("");
+
+        let name_size = self.span()?;
+        if name_size > 0 {
+            let b = self.read(name_size)?;
+            let name = Data::from_array(b).text()?; // a name's bytes are its text, which must be a-z and 0-9
+            if !has_outline_name(&name) {
+                return Err(OutlineError(format!("not an outline name: {name:?}")));
+            }
+            o.set_name(&name);
+        }
+
+        let value_size = self.span()?;
+        if value_size > 0 {
+            o.set_value(Data::from_array(self.read(value_size)?)); // zero size stays as the default, no value
+        }
+
+        let contents_size = self.span()?;
+        Ok((o, self.w + contents_size))
+    }
+}
+
+// Every walk through an outline keeps a stack of its own, rather than calling itself for each level down. The writers walk with walk, which calls its step with each outline as it enters it, and again as it leaves once all of that outline's contents are done, so what a recursive function would do before calling itself goes in an enter, and what it would do after, in a leave. Sort keeps a stack of outlines it takes out of their parents to sort and put back, which is how Rust changes a tree it owns without holding two references into it at once. Compare keeps a stack of the pairs it has yet to compare, the binary reader a stack of the outlines it's still reading, each with where its contents end, and freeing an outline a stack of the contents it has yet to free. The text reader has kept a stack of the outlines above the line it's reading since it was first written.
+//
+// The other walks were written recursively at first, which reads more simply, and moved to loops when depth came to matter. A walk that calls itself spends a frame of the language's own stack on every level, and that stack is small: a few thousand levels in JavaScript and in Rust, about a thousand in Python. An outline's binary form arrives from the wire, so a few kilobytes of nesting from anyone could run it out. Past that point, JavaScript and Python throw, Go, whose stacks grow to a gigabyte before it gives up, stops with a fatal error, and Rust aborts the whole process, which nothing can catch. In Rust, freeing a tree is a walk too, one the compiler writes as a recursion unless an outline frees its contents itself, so the Drop above does. A walk with a stack of its own needs only memory, so how deep an outline goes is limited by memory alone, how large its bytes can be by the span's cap, and no nesting from anywhere can crash it. In JavaScript, timed against the recursion they replaced, the loops are no slower.
+
+/// A step of a walk through an outline: entering an outline, with how many levels down it is, or leaving it, once all its contents are done.
+enum Step<'a> {
+    Enter(&'a Outline, usize),
+    Leave(&'a Outline, usize),
+}
+
+/// Walk an outline depth first, calling `step` with each outline as the walk enters it, and again as it leaves.
+fn walk<'a>(root: &'a Outline, mut step: impl FnMut(Step<'a>)) {
+    let mut path = vec![(root, 0)]; // the outlines from the root down to where the walk is, each with the index of the next outline to visit in its contents
+    step(Step::Enter(root, 0));
+    while let Some(top) = path.last_mut() {
+        let o = top.0;
+        if top.1 < o.contents.len() {
+            let c = &o.contents[top.1]; // go down into the next outline in contents
+            top.1 += 1;
+            path.push((c, 0));
+            step(Step::Enter(c, path.len() - 1));
+        } else {
+            path.pop(); // or back up, having visited them all
+            step(Step::Leave(o, path.len()));
+        }
+    }
+}
+
+/// A copy of an outline with its contents sorted at every level, deepest first, for the writers; the values are shared rather than copied, since a Data's bytes are the same either way.
+fn sorted_copy(o: &Outline) -> Outline {
+    let mut copies: Vec<Outline> = Vec::new(); // the copies the walk is making, from the root down to where it is
+    let mut root = None;
+    walk(o, |step| match step {
+        Step::Enter(x, _) => {
+            let mut c = Outline::new(&x.name);
+            c.set_value(x.value.clone());
+            copies.push(c);
+        }
+        Step::Leave(_, _) => {
+            let mut c = copies
+                .pop()
+                .expect("the copy of the outline the walk is leaving");
+            c.contents.sort_by(outline_compare); // sort from the deepest levels up, since the walk leaves an outline only after all its contents, then sort this level
+            match copies.last_mut() {
+                Some(parent) => parent.add(c), // and add this copy, now whole, to the copy above it
+                None => root = Some(c),
+            }
+        }
+    });
+    root.expect("the root, which the walk leaves last")
+}
+
+/// Compare two outlines for sort order: name first, then value, then nested contents pairwise down the whole tree.
+fn outline_compare(o1: &Outline, o2: &Outline) -> std::cmp::Ordering {
+    use std::cmp::Ordering::Equal;
+    let c = outline_compare_here(o1, o2);
+    if c != Equal {
+        return c; // names or values differ, which settles nearly every comparison a sort makes, with nothing made to do it
+    }
+
+    // value tied, so we examine contents pairwise, with a stack of our own of the pairs still to compare, rather than calling ourselves for each level down
+    // the pair on top is next; a pair marked counts compares how many contents its two outlines hold, once all the pairs of their contents have tied
+    let mut pending = Vec::new();
+    /// Push a pair whose names and values tied, then the pairs of their contents above it, the first pair on top, so it and everything inside it is compared before the second.
+    fn push<'a>(
+        pending: &mut Vec<(&'a Outline, &'a Outline, bool)>,
+        a: &'a Outline,
+        b: &'a Outline,
+    ) {
+        pending.push((a, b, true));
+        for (x, y) in a.contents.iter().zip(&b.contents).rev() {
+            pending.push((x, y, false)); // compare contents pairwise at each index
+        }
+    }
+    push(&mut pending, o1, o2);
+    while let Some((a, b, counts)) = pending.pop() {
+        if counts {
+            let c = a.contents.len().cmp(&b.contents.len());
+            if c != Equal {
+                return c; // all shared contents match, fewer contents sorts first
+            }
+        } else {
+            let c = outline_compare_here(a, b);
+            if c != Equal {
+                return c; // every caller sorts or checks deeper levels first, so contents at each level are already in order
+            }
+            push(&mut pending, a, b);
+        }
+    }
+    Equal // a complete and deep tie: identical name, value, and contents
+}
+
+/// Compare two outlines by their names and values alone, for compare as it goes down the tree.
+fn outline_compare_here(o1: &Outline, o2: &Outline) -> std::cmp::Ordering {
+    // name first, where the lighter name wins; then, with the same name, value, where no value is an empty Data, which sorts before any value, since a shorter value sorts first
+    // slices compare the way an outline sorts: byte by byte up to the shorter length, where the first differing byte decides the order, and then the shorter value first
+    o1.name
+        .cmp(&o2.name)
+        .then_with(|| o1.value.array().cmp(o2.value.array()))
+}
+
+// span
+
+// Span: a variable-length integer encoding for size prefixes in the binary format. Each byte contributes 7 bits of value; the high bit is 1 to continue, 0 to stop. Least-significant byte first (little-endian), matching LEB128 (WebAssembly, DWARF debug info) and Protocol Buffers' varint. Capped at 4 bytes (28 bits), giving a maximum value of 268,435,455 — about 256 MB. Outlines are designed to be small packets, not bulk storage, so this ceiling is generous. An Outline that approaches this size is almost certainly a misuse.
+//
+// The size of an outline's contents is a span too, the root's included, so the cap bounds an outline's whole binary form at about 256 MB: the writer refuses an outline whose bytes would pass it, and no span can tell the reader to expect more. That's still more than a program should take from outside. An outline takes as few as 3 bytes in its binary form and about 72 in memory, so reading bytes can take more than 20 times their size, and when Rust can't get the memory it asks for, it aborts the process, which nothing can catch. So a program that reads outlines from the wire caps how many bytes it accepts before it hands them to data_to_outline, the way a server caps the size of a request body.
+
+/// What [`span_decode`] reads: the size the span says, and how many bytes the span took, so a reader can move past it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    /// The size the span says.
+    pub value: usize,
+    /// How many bytes the span took, 1 to 4.
+    pub bytes_read: usize,
+}
+
+/// A size as a span, a Data of 1 to 4 bytes, the way an outline's binary form writes each size.
+///
+/// ```
+/// assert_eq!(zootella_ergo::span_encode(300).base16(), "ac02");
+/// ```
+///
+/// # Panics
+///
+/// Panics unless `n` is at most 268,435,455, which is a bug in the caller.
+pub fn span_encode(n: usize) -> Data {
+    Data::from(span_bytes(n))
+}
+
+/// Read the span at an offset into a Data, answering its value and how many bytes it took, so a reader can move past it, or an [`OutlineError`] because the bytes there aren't a span written the one way a span is.
+pub fn span_decode(d: &Data, offset: usize) -> Result<Span, OutlineError> {
+    read_span(d.array(), offset)
+}
+
+/// A size as a span's bytes, at most 4.
+fn span_bytes(n: usize) -> Vec<u8> {
+    assert!(n < 0x1000_0000, "not a size a span can hold: {n}"); // max 268,435,455 (~256 MB)
+    let mut n = n;
+    let mut b = Vec::with_capacity(4);
+    loop {
+        let mut y = (n & 0x7f) as u8; // take the lowest 7 bits
+        n >>= 7; // shift them off, ready to take the next 7
+        if n > 0 {
+            y |= 0x80; // set the high bit to signal "more bytes follow" to the decoder
+        }
+        b.push(y);
+        if n == 0 {
+            return b;
+        }
+    }
+}
+
+/// The span's value and how many bytes it took, so the caller can advance its cursor.
+fn read_span(a: &[u8], offset: usize) -> Result<Span, OutlineError> {
+    let mut n = 0;
+    let mut shift = 0;
+    let mut i = offset;
+    for count in 0..4 {
+        // at most 4 bytes; more than that means malformed input
+        let Some(&y) = a.get(i) else {
+            return Err(OutlineError(format!("a span runs past the end at {i}")));
+        };
+        i += 1;
+        n |= usize::from(y & 0x7f) << shift; // accumulate the 7 value bits at their proper place
+        if y & 0x80 == 0 {
+            // high bit clear means this is the last byte
+            if count > 0 && y == 0 {
+                return Err(OutlineError(format!(
+                    "a span written longer than it needs to be at {offset}"
+                ))); // reject non-canonical encoding: a multi-byte span whose top byte contributes no bits could have fit in fewer bytes
+            }
+            return Ok(Span {
+                value: n,
+                bytes_read: i - offset,
+            });
+        }
+        shift += 7;
+    }
+    Err(OutlineError(format!(
+        "a span longer than 4 bytes at {offset}"
+    ))) // ran past the 4 byte limit without finding a terminating byte
+}
+
+// quoted encoding
+
+// "Quoted" Encoding: A text format for binary data that mixes quoted ASCII text with base16
+//
+// «"Hello"0a» is easier to read than base16 '48656c6c6f0a'
+// «"A"00» shows the bits of a null terminator in a language-agnostic way, unlike 'A\0'
+// «» blank text is valid quoted encoding to express nothing, size zero bytes
+//
+// unlike the base encoding of Data, quoted is *not* round-trip!
+// a heuristic below balances brevity and readability when choosing which ASCII bytes to expose in quotes
+
+/// True if the given character c is understandable to read in quotes: space through tilde, but not the double quotation mark itself, which is our delimiter!
+fn quotable(c: u8) -> bool {
+    (0x20..=0x7e).contains(&c) && c != 0x22
+}
+
+/// Encode the given Data as text in quoted encoding, where no bytes at all are blank text.
+///
+/// ```
+/// use zootella_ergo::{Data, data_to_quoted};
+/// assert_eq!(data_to_quoted(&Data::from_text("Hello\r\n")), "\"Hello\"0d0a");
+/// ```
+pub fn data_to_quoted(d: &Data) -> String {
+    let a = d.array();
+
+    let text_count = a.iter().filter(|&&c| quotable(c)).count();
+    if text_count * 2 < a.len() {
+        return d.base16(); // under half quotable? it's random or binary, just use base16; ties go to quoted
+    }
+
+    let mut s = String::new();
+    let mut i = 0;
+    while i < a.len() {
+        // alternate between:
+        let start = i;
+        if quotable(a[i]) {
+            // runs of quotable text, and
+            while i < a.len() && quotable(a[i]) {
+                i += 1;
+            }
+            s.push('"');
+            s.extend(a[start..i].iter().map(|&c| char::from(c)));
+            s.push('"');
+        } else {
+            // runs of unquotable bytes in base16
+            while i < a.len() && !quotable(a[i]) {
+                i += 1;
+            }
+            s.push_str(&bytes_to_base16(&a[start..i]));
+        }
+    }
+    s
+}
+
+/// Convert quoted text back to Data, where blank text is valid quoted encoding to describe zero bytes of nothing, or a [`DataError`] because the text isn't quoted encoding. It reads leniently, so many texts read to the same bytes.
+pub fn quoted_to_data(s: &str) -> Result<Data, DataError> {
+    quoted_bytes(s)
+        .map(Data::from)
+        .ok_or_else(|| refuse("quoted encoding", s))
+}
+
+/// The bytes quoted text holds, or None when it isn't quoted encoding.
+fn quoted_bytes(s: &str) -> Option<Vec<u8>> {
+    // walk through the string, alternating between quoted sections and base16 pairs, a byte at a time, since anything that isn't ascii is refused either way
+    let a = s.as_bytes();
+    let mut b = Vec::new();
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] == b'"' {
+            // opening quote starts a text section
+            i += 1;
+            let end = a[i..].iter().position(|&c| c == b'"')?; // no closing quote
+            for &c in &a[i..i + end] {
+                // strict: every character inside must be something data_to_quoted would have quoted
+                if !quotable(c) {
+                    return None; // rejects control chars, high bytes, unicode, and the quote char itself
+                }
+                b.push(c); // quotable guarantees ASCII, one byte per char
+            }
+            i += end + 1;
+        } else {
+            // outside quotes, consume base16 digit pairs
+            if i + 1 >= a.len() {
+                return None; // a lone base16 digit with no pair is invalid
+            }
+            let digit = |c: u8| match c {
+                b'0'..=b'9' => Some(c - b'0'),
+                b'a'..=b'f' => Some(c - b'a' + 10),
+                _ => None, // lowercase base16 only
+            };
+            b.push((digit(a[i])? << 4) | digit(a[i + 1])?);
+            i += 2;
+        }
+    }
+    Some(b)
+}
