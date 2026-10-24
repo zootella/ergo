@@ -179,7 +179,7 @@ This last section is less style than procedure, for the stretch ahead. ergo's ad
 
 The original is a mine, not a museum, and that's about what comes: a function arrives because it earned its place, and the rough and early parts stay behind, the original's own throw helper and exception class among them. But a function that earns its place arrives whole. Its comments are part of the gem, not the ore around it: the design and the reasons for it, the history in an essay, the _hey, reader, check out this part_, and the winks and jokes that make a reader glad they kept reading. Carry them all.
 
-1. **Read the whole neighborhood first.** Before writing anything, read the helper, its family, the essay above it, the tests below it, and whatever it leans on in the guard and test layer.
+1. **Read the whole neighborhood first, then choose what comes.** Before writing anything, read the helper, its family, the essay above it, the tests below it, and whatever it leans on in the guard and test layer. Then choose by two tests. A close-knit family comes whole, its members built on each other or meant to be used together, even when only some of them are needed now. Anything else comes only when something in ergo needs it. Sitting in the same region of the original isn't a reason, and neither is being small and useful. Name what needs each arrival before it comes.
 2. **Inventory every comment**: essays, line comments, group comments, the comments inside the tests, diagrams, emoji, asides, jokes. Each one gets a destination in ergo, or a reason it stays behind.
 3. **Carry each to its place.**
    - An essay comes over as an essay, under its family's heading, in all four editions. It keeps its history, since the essay is the one comment allowed to remember.

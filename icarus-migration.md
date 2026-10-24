@@ -26,14 +26,9 @@ ergo's comments and documentation describe ergo as it is, and leave the differen
 - `trim(s)` is new, and differs from `s.trim()` at the same two characters: it keeps a byte order mark, and takes off U+0085.
 - **cut can cut at whitespace.** `cut`, `cutLast`, and `cut2` take any tag of at least one character, so `cut(s, ' ')` and `cut(s, '\n')` work in ergo. icarus refused a space, a tab, or a newline as a tag, since its `checkText` called them blank. A blank tag throws in both.
 - `cutAfterLast` is the same, and its message names the tag and the text.
-- Left behind: `replaceAll` and `replaceOne`, for the platform's own. `replaceOne(s, a, b)` is `s.replace(a, b)` with a string `a`, which is what it called. But `replaceAll(s, a, b)` is `s.split(a).join(b)`, not the platform's `s.replaceAll(a, b)`, which reads `$&`, `$1`, and `$$` in the replacement as patterns, where icarus put the replacement in as written. And icarus's two refused a blank or whitespace tag or replacement, so `replaceAll(s, 'a', '')` threw there, while the platform's take them.
-
-## tagged template literals
-
 - `deindent` is the same, except the whitespace it takes off the end of each line is Unicode's list, so a line ending in U+FEFF keeps it, and one ending in U+0085 loses it.
-- **safefill's rule is stricter.** It refuses whitespace at either end by Unicode's list, and inside it allows nothing but single plain spaces. icarus refused exactly tabs, carriage returns, newlines, and double spaces inside, so a no-break space, a vertical tab, a form feed, or a line separator, U+2028, passed there and is refused here.
-- `safefill` refuses to be called like a function. `safefill('a b')` throws in ergo, where icarus answered `'a'`, the first letter of the string it took for the template's pieces.
-- `checkSafeFill` is public now, beside the new `hasSafeFill`.
+- Left behind: `replaceAll` and `replaceOne`, for the platform's own. `replaceOne(s, a, b)` is `s.replace(a, b)` with a string `a`, which is what it called. But `replaceAll(s, a, b)` is `s.split(a).join(b)`, not the platform's `s.replaceAll(a, b)`, which reads `$&`, `$1`, and `$$` in the replacement as patterns, where icarus put the replacement in as written. And icarus's two refused a blank or whitespace tag or replacement, so `replaceAll(s, 'a', '')` threw there, while the platform's take them.
+- Left behind: `safefill`, icarus's tag for text that's about to be hashed, and `checkSafeFill`, its rule, since they guard the application's own hashed messages and nothing in ergo needs them. A project that uses them keeps its own.
 
 ## Size
 

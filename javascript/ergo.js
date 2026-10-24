@@ -36,7 +36,7 @@ export function checkInt(i) {
 /*
 A string is a type, and text is a string that holds something. hasString asks only about the type: is this a string at all, blank and whitespace included. In Rust and Go every string parameter already is one, so there it always answers true, and it's in all four editions to keep them alike. hasText asks about what's inside: a string with at least one character that isn't whitespace, so "a" and " a " are text, while "", " ", and a tab and a newline aren't.
 
-Whitespace means one thing everywhere in ergo: the 25 characters on Unicode's White_Space list, and trim takes them off both ends of a string. Each platform's own trim keeps a list of its own. JavaScript's differs from Unicode's at exactly two characters of the 1,112,064: it trims the byte order mark, U+FEFF, which Unicode doesn't call whitespace, and keeps the next line control, U+0085, which Unicode does. Python's strip also trims the four separator controls, U+001C through U+001F, and Rust's trim and Go's TrimSpace follow Unicode's list already. So ergo uses Unicode's list in every edition, and trim, hasText, deindent, and safefill agree everywhere about what whitespace is.
+Whitespace means one thing everywhere in ergo: the 25 characters on Unicode's White_Space list, and trim takes them off both ends of a string. Each platform's own trim keeps a list of its own. JavaScript's differs from Unicode's at exactly two characters of the 1,112,064: it trims the byte order mark, U+FEFF, which Unicode doesn't call whitespace, and keeps the next line control, U+0085, which Unicode does. Python's strip also trims the four separator controls, U+001C through U+001F, and Rust's trim and Go's TrimSpace follow Unicode's list already. So ergo uses Unicode's list in every edition, and trim, hasText, and deindent agree everywhere about what whitespace is.
 */
 
 //true if s is a string, blank and whitespace included; never throws
@@ -183,18 +183,8 @@ function _checkCutTag(tag) {
   return tag
 }
 
-//  _                             _   _                       _       _         _ _ _                 _
-// | |_ __ _  __ _  __ _  ___  __| | | |_ ___ _ __ ___  _ __ | | __ _| |_ ___  | (_) |_ ___ _ __ __ _| |___
-// | __/ _` |/ _` |/ _` |/ _ \/ _` | | __/ _ \ '_ ` _ \| '_ \| |/ _` | __/ _ \ | | | __/ _ \ '__/ _` | / __|
-// | || (_| | (_| | (_| |  __/ (_| | | ||  __/ | | | | | |_) | | (_| | ||  __/ | | | ||  __/ | | (_| | \__ \
-//  \__\__,_|\__, |\__, |\___|\__,_|  \__\___|_| |_| |_| .__/|_|\__,_|\__\___| |_|_|\__\___|_|  \__,_|_|___/
-//           |___/ |___/                               |_|
-
-/*
-Two tags for template literals, each written just before the backtick, like deindent`...` and safefill`...`. JavaScript hands a tag the literal's pieces of text and the values of its fields separately, so the tag can reshape or check them before joining them into one string. Called like a plain function, either one throws, since a plain string isn't a template's pieces.
-*/
-
 //be able to indent multiline string literals with code so they don't mess up overall readability!
+//it's a tag, written just before the backtick like deindent`...`, so javascript hands it the literal's pieces of text and its fields separately
 export function deindent(words, ...fields) {
   if (!Array.isArray(words))
     throw new Error(`deindent is a tag for a template literal: ${words}`) //you probably called this like a function
@@ -223,35 +213,6 @@ export function deindent(words, ...fields) {
   })
 
   return lines.join('\n') + '\n' //reassemble lines with trailing newlines
-}
-
-//custom tagged template literal function; use like safefill`A message for ${name} about ${thing}`
-//just like the default template literal, with an additional check to require non-blank strings
-//important for being sure you're hashing the text you think you are hashing (you can't tell from looking at the hash value!)
-export function safefill(words, ...fields) {
-  //words is not lines, it's the literal text pieces between the ${} interpolations
-  if (!Array.isArray(words))
-    throw new Error(`safefill is a tag for a template literal: ${words}`) //called like a function, words would be a string, and words[0] its first letter
-
-  for (let field of fields) checkSafeFill(field)
-  let s = words[0] //fill in the blanks to build the string the same way javascript does
-  for (let i = 0; i < fields.length; i++) s += fields[i] + words[i + 1]
-  return checkSafeFill(s) //make sure the finished text also passes, blocks blank template, essentially
-}
-//true if s is text safe to fill into a template and hash: no whitespace at either end, none inside but single spaces, and nothing that's an object or a promise turned into a string; never throws
-export function hasSafeFill(s) {
-  return (
-    hasText(s) && //must be string that is not blank and does not trim to blank, and...
-    trim(s) == s && //must not start or end with whitespace
-    !/(?! )\p{White_Space}| {2}/u.test(s) && //must not have whitespace but single spaces: no tabs, newlines, or double spaces; (?! ) skips the plain space, so \p{White_Space} finds every other kind
-    s != '[object Object]' && //must not look like an object incorrectly turned into a string
-    s != '[object Promise]'
-  )
-}
-//a guard: pass text that's safe to fill through, or throw because it isn't
-export function checkSafeFill(s) {
-  if (!hasSafeFill(s)) throw new Error(`not safe to fill: ${_quote(s)}`)
-  return s
 }
 
 //      _

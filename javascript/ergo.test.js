@@ -12,9 +12,6 @@ import {
   cut2,
   cutAfterLast,
   deindent,
-  safefill,
-  hasSafeFill,
-  checkSafeFill,
   Size,
   saySize4,
   Time,
@@ -226,16 +223,6 @@ describe('text', () => {
     }
     expect(words).toEqual(['a', 'b', 'c'])
   })
-})
-
-//  _                             _   _                       _       _         _ _ _                 _
-// | |_ __ _  __ _  __ _  ___  __| | | |_ ___ _ __ ___  _ __ | | __ _| |_ ___  | (_) |_ ___ _ __ __ _| |___
-// | __/ _` |/ _` |/ _` |/ _ \/ _` | | __/ _ \ '_ ` _ \| '_ \| |/ _` | __/ _ \ | | | __/ _ \ '__/ _` | / __|
-// | || (_| | (_| | (_| |  __/ (_| | | ||  __/ | | | | | |_) | | (_| | ||  __/ | | | ||  __/ | | (_| | \__ \
-//  \__\__,_|\__, |\__, |\___|\__,_|  \__\___|_| |_| |_| .__/|_|\__,_|\__\___| |_|_|\__\___|_|  \__,_|_|___/
-//           |___/ |___/                               |_|
-
-describe('tagged template literals', () => {
   test('deindent lets a multiline template literal indent with the code around it', () => {
     let name1 = 'Alice'
     let name2 = 'Bob'
@@ -281,62 +268,6 @@ describe('tagged template literals', () => {
     `).toBe('a\n\nb\n') //whitespace by unicode's list leaves the end of each line, and a line of it alone becomes a blank line that stays, here in the middle
     expect(deindent`${5} and ${null}`).toBe('5 and null\n') //fields fill in the way a template literal fills them
     expect(() => deindent('a')).toThrow() //you probably called this like a function
-  })
-  test("safefill fills a template, and refuses a field or a result that would hash as something you didn't mean", () => {
-    //first, let's just observe how things can go wrong with js template literals
-    let s = 'hi'
-    let b = '' //blank
-    let i = 19
-    let f = 10 / 3
-    let o = { n: 7 }
-    let a = ['a', 'b']
-    let p = Promise.resolve('done') //born resolved, but to get done you have to await p
-    let u = undefined
-    let n = null
-    expect(
-      `string: ${s} blank: ${b} and int: ${i} are ok for a trail message; float: ${f}, object: ${o}, array: ${a}, promise: ${p}, undefined: ${u}, and null: ${n} would make a mess`,
-    ).toBe(
-      'string: hi blank:  and int: 19 are ok for a trail message; float: 3.3333333333333335, object: [object Object], array: a,b, promise: [object Promise], undefined: undefined, and null: null would make a mess',
-    ) //a call that records a message by its hash, like trailAdd(`Thing ${s} just happened`), assumes s is the correct string; but if it's an object or promise js will just call .toString() on it, and the hash of what it adds can never be found later! so we must guard against this, as it's quite possible and would be difficult to spot!
-
-    //sanity check our custom tagged template literal function
-    expect(safefill`W`).toBe('W') //only word
-    expect(safefill`${'S'}`).toBe('S') //only space
-    let name1 = 'Alice'
-    let name2 = 'Bob'
-    expect(safefill`Hello ${name1} and ${name2}`).toBe('Hello Alice and Bob')
-
-    //watch it throw if you pass it blank or a non string
-    expect(
-      () =>
-        safefill`here ${name2} put in something ${p} that blows up from above`,
-    ).toThrow()
-    expect(() => safefill`here ${b} is blank`).toThrow()
-    expect(() => safefill`here ${o} is an object`).toThrow()
-    expect(() => safefill`here ${i} is a number`).toThrow() //fields must be text, even a number, so the caller writes it out
-    expect(() => safefill``).toThrow() //a blank template
-    expect(() => safefill('a b')).toThrow() //called like a function, it would have filled in only the a
-  })
-  test('safe fill text has no whitespace at its ends, and none inside but single spaces', () => {
-    expect(hasSafeFill('Hello Alice and Bob')).toBe(true)
-    expect(checkSafeFill('Alice')).toBe('Alice')
-    for (let s of [
-      '',
-      ' ',
-      ' Alice', //whitespace at the start
-      'Alice ', //or the end
-      'Alice  Bob', //a double space
-      'Alice\tBob', //a tab
-      'Alice\nBob', //a newline
-      'Alice\u00a0Bob', //a no-break space, or any of unicode's whitespace that isn't a plain space
-      'Alice\u2028Bob', //a line separator
-      '[object Object]', //an object incorrectly turned into a string
-      '[object Promise]',
-      5,
-    ])
-      expect(hasSafeFill(s), JSON.stringify(s)).toBe(false)
-    expect(hasSafeFill('\ufeffAlice')).toBe(true) //a byte order mark isn't whitespace by unicode's list, so it's safe here too, if invisible
-    expect(() => checkSafeFill('Alice  Bob')).toThrow()
   })
 })
 
