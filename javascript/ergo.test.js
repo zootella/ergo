@@ -1002,7 +1002,7 @@ describe.skipIf(!javascriptChosen)('Outline', () => {
     expect(o.list('jar').length).toBe(2)
     expect(o.list().length).toBe(2) //the two unnamed
 
-    //falsy lookups all mean "look for blank name"
+    //null and blank lookups both mean "look for blank name"
     expect(o.list(null).length).toBe(2)
     expect(o.list('').length).toBe(2)
 
@@ -1257,6 +1257,7 @@ describe.skipIf(!javascriptChosen)('Outline', () => {
     self.add(self)
     rejectsCycle(() => self.data())
     rejectsCycle(() => self.text())
+    rejectsCycle(() => self.sort()) //and sort, which walks the whole tree too
 
     //longer cycle: two outlines containing each other
     let a = Outline('a')
@@ -1265,6 +1266,7 @@ describe.skipIf(!javascriptChosen)('Outline', () => {
     b.add(a)
     rejectsCycle(() => a.data())
     rejectsCycle(() => a.text())
+    rejectsCycle(() => a.sort())
 
     //DAG (the same outline instance referenced from two sibling subtrees) is also rejected--the text form can't express sharing, so the binary form won't either
     let shared = Outline('shared', Data({ text: 'value' }))
@@ -1273,6 +1275,74 @@ describe.skipIf(!javascriptChosen)('Outline', () => {
     dag.m('right').add(shared)
     rejectsCycle(() => dag.data())
     rejectsCycle(() => dag.text())
+    rejectsCycle(() => dag.sort())
+  })
+  test('a deep outline, a thousand levels down, goes through every walk: both writers, both readers, sort, compare, and the check for cycles', () => {
+    //a chain of outlines named a, a thousand and one deep, with a value at the bottom
+    let chain = (bottom) => {
+      let top = Outline('a')
+      let o = top
+      for (let i = 0; i < 1000; i++) o = o.m('a')
+      o.value(Data({ base16: bottom }))
+      return top
+    }
+    let bottomOf = (o) => {
+      while (o.length() > 0) o = o.get(0)
+      return o
+    }
+
+    //two chains the same all the way down but the value at the bottom, added in the wrong order, so putting them in order compares a thousand levels deep
+    let o = Outline('x')
+    o.add(chain('01'))
+    o.add(chain('00'))
+    let d = o.data()
+    let t = o.text()
+    expect(bottomOf(o.get(0)).value().base16()).toBe('01') //the writers sorted a copy, and left the outline as it was
+    expect(bottomOf(dataToOutline(d).get(0)).value().base16()).toBe('00') //while the bytes came out in order
+    expect(dataToOutline(d).data().base16()).toBe(d.base16()) //and round-trip
+    expect(dataToOutline(d).text()).toBe(t) //and read to the same text
+    expect(textToOutline(t).data().base16()).toBe(d.base16()) //which reads to the same bytes
+    o.sort()
+    expect(bottomOf(o.get(0)).value().base16()).toBe('00') //sort in place, too
+
+    //the two chains' bytes swapped, out of order a thousand levels down, which the binary reader finds and refuses
+    let header = 5 //the root is its name span 01, its name x, no value 00, and a contents span of two bytes, then the two chains, the same size
+    let half = (d.size() - header) / 2
+    let swapped = Bin(d.size())
+    swapped.add(d.clipView(0, header))
+    swapped.add(d.clipView(header + half, d.size()))
+    swapped.add(d.clipView(header, header + half))
+    expect(() => dataToOutline(swapped.data())).toThrow(/out of order/)
+
+    //and a cycle at the bottom of a chain, which the check finds before anything walks into it
+    let top = chain('01')
+    bottomOf(top).add(top)
+    expect(() => top.data()).toThrow(/appears twice in its tree/)
+    expect(() => top.sort()).toThrow(/appears twice in its tree/)
+
+    //a comb, a thousand deep, each level holding a leaf with a value and the next level down, written the same in any order and from sloppy hand-written text
+    let comb = Outline('comb')
+    let level = comb
+    for (let i = 0; i < 1000; i++) {
+      level.add(
+        Outline('', Data({ base16: (i % 256).toString(16).padStart(2, '0') })),
+      )
+      level = level.m('next')
+    }
+    expect(shuffledOutline(comb).data().base16()).toBe(comb.data().base16())
+    expect(textToOutline(sloppyText(comb)).data().base16()).toBe(
+      comb.data().base16(),
+    )
+  })
+  test('an outline is an object of its own, with the type Outline', () => {
+    let a = Outline('a')
+    let b = Outline('b')
+    expect(a.type).toBe('Outline') //what add and the readers look for, to tell an outline from a name or a Data
+    a.add('x')
+    expect([a.length(), b.length()]).toEqual([1, 0]) //two outlines never share contents
+    b.value(Data({ text: 'v' }))
+    expect([a.value().size(), b.value().size()]).toEqual([0, 1]) //or values
+    expect(JSON.stringify(a)).toBe('{"type":"Outline"}') //json sees only the type, since what an outline holds is behind its methods
   })
 })
 

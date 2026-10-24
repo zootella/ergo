@@ -1611,7 +1611,12 @@ export function Outline(name, value) {
   }
   //sort all nested contents recursively so identical information produces identical serialization
   o.sort = () => {
-    _contents.forEach((c) => c.sort()) //sort from the deepest levels up
+    _outlineFlat(o) //refuse a cycle or a shared subtree first, as the writers do, since sorting walks the whole tree
+    o._sortDown()
+  }
+  //sort this outline's contents and theirs, once sort has checked the tree
+  o._sortDown = () => {
+    _contents.forEach((c) => c._sortDown()) //sort from the deepest levels up
     _contents.sort(_outlineCompare) //then sort this level
   }
 
