@@ -1513,17 +1513,23 @@ function _noValue() {
 }
 
 //make an outline, with an optional name and value, and then contents added to it; the essay above says what it's for and how to design one
+//call its methods on the outline, like o.text(), since a method taken off its outline has nothing to work on
 export function Outline(name, value) {
-  let o = { type: 'Outline' } //the outline object we'll build and return
-  let _name = '' //outlines can have names, [a-z0-9] only, or no name at all
-  let _value = _noValue() //and hold one Data value, which holds no bytes when there's no value
-  let _contents = [] //and hold contents, an array of lower nested outlines
-  o.length = () => _contents.length //how many we have
+  return new _Outline(name, value) //the one new, here, so a caller writes Outline('name') the way it writes Data({text: s})
+}
+//a class, so an outline's members are truly private, and every outline shares one set of methods rather than carrying a copy of each
+class _Outline {
+  type = 'Outline' //note the type
+  #name = '' //outlines can have names, [a-z0-9] only, or no name at all
+  #value = _noValue() //and hold one Data value, which holds no bytes when there's no value
+  #contents = [] //and hold contents, an array of lower nested outlines
 
-  //normalize and validate a name for the setter and all lookups: undefined and null become blank, and anything else must be a name
-  let _k = (k) => {
-    if (k == undefined) return '' //== finds undefined and null together, the two ways to say no name
-    return checkOutlineName(k)
+  constructor(name, value) {
+    if (name !== undefined) this.name(name) //set the passed in name and value, if any
+    if (value !== undefined) this.value(value)
+  }
+  length() {
+    return this.#contents.length //how many we have
   }
 
   /*
@@ -1539,40 +1545,40 @@ export function Outline(name, value) {
 
   the name [a-z0-9] requirement may seem restrictive, but prevents the case ambiguity you've likely encountered when examining a JavaScript object of HTTP headers (did the cloud provider lowercase? could there be "origin" *and* "Origin" in here?!!) and discourages overloading values into keys (if you want dots and slashes, build that into nested contents)
   */
-  o.name = (p) => {
-    if (p === undefined) return _name //get
-    _name = _k(p) //set, normalizing and validating through the shared helper
+  name(p) {
+    if (p === undefined) return this.#name //get
+    this.#name = _blankOrName(p) //set, normalizing and validating through the shared helper
   }
-  o.value = (p) => {
+  value(p) {
     if (p === undefined)
-      return _value //get
+      return this.#value //get
     else if (p === null)
-      _value = _noValue() //set clear
+      this.#value = _noValue() //set clear
     else if (p.type == 'Data')
-      _value = p //set to the given Data
+      this.#value = p //set to the given Data
     else throw new Error(`an outline's value is a Data or null: ${p}`)
   }
 
   //get the outline at index i in contents
-  o.get = (i) => {
-    if (!(hasInt(i) && i >= 0 && i < _contents.length))
-      throw new Error(`no outline ${i} in ${_contents.length}`)
-    return _contents[i]
+  get(i) {
+    if (!(hasInt(i) && i >= 0 && i < this.#contents.length))
+      throw new Error(`no outline ${i} in ${this.#contents.length}`)
+    return this.#contents[i]
   }
   //add to this outline's contents
-  o.add = (a) => {
+  add(a) {
     if (a.type == 'Outline')
-      _contents.push(a) //add an outline you've already built
+      this.#contents.push(a) //add an outline you've already built
     else if (typeof a == 'string')
-      _contents.push(Outline(a)) //add a new outline with this name
+      this.#contents.push(Outline(a)) //add a new outline with this name
     else if (a.type == 'Data')
-      _contents.push(Outline('', a)) //add a new unnamed outline with this value
+      this.#contents.push(Outline('', a)) //add a new unnamed outline with this value
     else throw new Error(`an outline adds an Outline, a name, or a Data: ${a}`)
   }
   //true if contents includes an outline with name k
-  o.has = (k) => {
-    k = _k(k)
-    return _contents.some((c) => c.name() == k)
+  has(k) {
+    k = _blankOrName(k)
+    return this.#contents.some((c) => c.name() == k)
   }
 
   /*
@@ -1581,50 +1587,51 @@ export function Outline(name, value) {
   o.list() returns all unnamed contents
   o.list('type1') or filter out a named sublist, all contents named "type1"
   */
-  o.n = (k) => {
-    k = _k(k)
-    let found = _contents.find((c) => c.name() == k)
+  n(k) {
+    k = _blankOrName(k)
+    let found = this.#contents.find((c) => c.name() == k)
     if (!found) throw new Error(`no outline named ${JSON.stringify(k)}`)
     return found
   }
-  o.m = (k) => {
-    k = _k(k)
-    if (!o.has(k)) o.add(Outline(k))
-    return o.n(k)
+  m(k) {
+    k = _blankOrName(k)
+    if (!this.has(k)) this.add(Outline(k))
+    return this.n(k)
   }
-  o.list = (k) => {
-    k = _k(k)
-    return _contents.filter((c) => c.name() == k)
+  list(k) {
+    k = _blankOrName(k)
+    return this.#contents.filter((c) => c.name() == k)
   }
 
   //remove all outlines in contents with name k, iterates backwards so splicing doesn't skip
-  o.remove = (k) => {
-    k = _k(k)
-    for (let i = _contents.length - 1; i >= 0; i--) {
-      if (_contents[i].name() == k) _contents.splice(i, 1)
+  remove(k) {
+    k = _blankOrName(k)
+    for (let i = this.#contents.length - 1; i >= 0; i--) {
+      if (this.#contents[i].name() == k) this.#contents.splice(i, 1)
     }
   }
   //discard this outline's value and contents (but keep the name!)
-  o.clear = () => {
-    _value = _noValue()
-    _contents = []
+  clear() {
+    this.#value = _noValue()
+    this.#contents = []
   }
   //sort all nested contents, at every level, so identical information produces identical serialization
-  o.sort = () => {
-    _outlineFlat(o) //refuse a cycle or a shared subtree first, as the writers do, since sorting walks the whole tree
-    _walk(o, null, (x) => x._sortLevel()) //sort from the deepest levels up, since the walk leaves an outline only after all its contents
-  }
-  //sort this outline's own contents, for a walk that has already sorted the levels below
-  o._sortLevel = () => {
-    _contents.sort(_outlineCompare) //then sort this level
+  sort() {
+    _outlineFlat(this) //refuse a cycle or a shared subtree first, as the writers do, since sorting walks the whole tree
+    _walk(this, null, (x) => x.#contents.sort(_outlineCompare)) //sort from the deepest levels up, since the walk leaves an outline only after all its contents, then sort this level
   }
 
-  o.text = () => _outlineToText(o) //text serialization, visible in source and documentation
-  o.data = () => _outlineToData(o) //binary serialization, compact on the wire
-
-  if (name !== undefined) o.name(name) //set the passed in name and value, if any
-  if (value !== undefined) o.value(value)
-  return o
+  text() {
+    return _outlineToText(this) //text serialization, visible in source and documentation
+  }
+  data() {
+    return _outlineToData(this) //binary serialization, compact on the wire
+  }
+}
+//normalize and validate a name for the setter and all lookups: undefined and null become blank, and anything else must be a name
+function _blankOrName(k) {
+  if (k == undefined) return '' //== finds undefined and null together, the two ways to say no name
+  return checkOutlineName(k)
 }
 
 //  _            _                     _       _       _
@@ -1844,13 +1851,18 @@ function _walk(root, enter, leave) {
 //a copy of an outline with its contents sorted at every level, deepest first, for the writers; the values are shared rather than copied, since a Data's bytes are the same either way
 function _sortedCopy(o) {
   let copies = [] //at each depth, the copy the walk is making there
+  let contents = [] //and the copies of its contents, gathered to sort before they go in
   _walk(
     o,
     (x, depth) => {
       copies[depth] = Outline(x.name(), x.value())
-      if (depth > 0) copies[depth - 1].add(copies[depth]) //into the copy above it, in the order the walk reaches it
+      contents[depth] = []
     },
-    (x, depth) => copies[depth]._sortLevel(), //sort from the deepest levels up, since the walk leaves an outline only after all its contents
+    (x, depth) => {
+      contents[depth].sort(_outlineCompare) //sort from the deepest levels up, since the walk leaves an outline only after all its contents, then sort this level
+      for (let c of contents[depth]) copies[depth].add(c)
+      if (depth > 0) contents[depth - 1].push(copies[depth]) //and gather this copy, now whole, for the copy above it
+    },
   )
   return copies[0]
 }
