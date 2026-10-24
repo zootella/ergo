@@ -43,11 +43,15 @@ import {
   hashFile,
   hashStream,
   FujiHasher,
+  hasOutlineName,
+  checkOutlineName,
   Outline,
   textToOutline,
   dataToOutline,
   dataToQuoted,
   quotedToData,
+  spanEncode,
+  spanDecode,
 } from './ergo.js'
 import { call } from './driver.js'
 import { startEditions, stopEditions, chosenEditions } from './editions.js'
@@ -1017,14 +1021,14 @@ describe.skipIf(!javascriptChosen)('Outline', () => {
     expect(() => Outline().name(' ')).toThrow() //whitespace
     expect(() => Outline().n('Key1')).toThrow() //lookups validate too, so you get a loud error instead of a silent "not found"
 
-    //values are Data or null; null is "no value"
+    //values are Data, and a Data of no bytes is no value; null clears to it
     let o = Outline('x')
     expect(() => o.value(42)).toThrow()
     expect(() => o.value('just a string')).toThrow()
     o.value(Data({ text: 'something' }))
     expect(o.value().text()).toBe('something')
     o.value(null) //null always valid, clears to no value
-    expect(o.value()).toBe(null)
+    expect(o.value().size()).toBe(0)
   })
   test('textToOutline indent algorithm: root at zero, child indents can be any width but must be consistent among siblings', () => {
     //dots stand in for spaces so the indentation is visible at a glance, immune to editor auto-formatting
@@ -1089,7 +1093,9 @@ describe.skipIf(!javascriptChosen)('Outline', () => {
 
     //a blank-everywhere line--no name, no value, no contents--is the minimum valid outline
     let o = textToOutline(':')
-    expect(o.name() == '' && o.value() === null && o.length() == 0).toBe(true)
+    expect(o.name() == '' && o.value().size() == 0 && o.length() == 0).toBe(
+      true,
+    )
   })
   test('textToOutline accepts trailing whitespace and # comments on each line, so pasted or hand-edited text tolerates reasonable sloppiness', () => {
     //dots stand in for spaces so the trailing whitespace is visible
@@ -1134,29 +1140,84 @@ describe.skipIf(!javascriptChosen)('Outline', () => {
     `)
   })
   test('span encoding: variable-length integer used for size prefixes in the binary form', () => {
-    //an outline with no name and no contents, and a value of n bytes, writes the name's span 00, then the value's span, the n bytes, and the contents span 00; this reads the value's span, and reads the outline back
-    function span(n) {
-      let a = Outline('', Data({ array: new Uint8Array(n) }))
-        .data()
-        .array()
-      let back = dataToOutline(Data({ array: a }))
-      expect(back.value() ? back.value().size() : 0).toBe(n) //decode
-      return Data({ array: a.subarray(1, a.length - 1 - n) }).base16() //encode
+    function both(n, base16) {
+      expect(spanEncode(n).base16()).toBe(base16) //encode
+      expect(spanDecode(Data({ base16 }), 0)).toEqual({
+        value: n,
+        bytesRead: base16.length / 2,
+      }) //decode
     }
 
     //boundaries at each byte threshold--7 bits per byte, up to 4 bytes
-    expect(span(0)).toBe('00')
-    expect(span(127)).toBe('7f') //1 byte: 0 through 127
-    expect(span(128)).toBe('8001')
-    expect(span(16383)).toBe('ff7f') //2 bytes: 128 through 16383
-    expect(span(16384)).toBe('808001')
-    expect(span(2097151)).toBe('ffff7f') //3 bytes: 16384 through 2097151
-    expect(span(2097152)).toBe('80808001') //4 bytes: 2097152 through 268435455, the last of which, ffffff7f, would take a value of 256 MB to reach this way
+    both(0, '00')
+    both(127, '7f') //1 byte: 0 through 127
+    both(128, '8001')
+    both(16383, 'ff7f') //2 bytes: 128 through 16383
+    both(16384, '808001')
+    both(2097151, 'ffff7f') //3 bytes: 16384 through 2097151
+    both(2097152, '80808001')
+    both(268435455, 'ffffff7f') //4 bytes: 2097152 through 268435455
+    expect(spanDecode(Data({ base16: '00ff7f' }), 1)).toEqual({
+      value: 16383,
+      bytesRead: 2,
+    }) //and from partway into the bytes, the way a reader moves through them
+
+    //encode rejects out of range
+    expect(() => spanEncode(-1)).toThrow()
+    expect(() => spanEncode(268435456)).toThrow() //one past the 4-byte cap
 
     //decode rejects non-canonical and truncated input
-    expect(() => dataToOutline(Data({ base16: '80000000' }))).toThrow() //non-canonical: two bytes encoding the value 0, canonical is one byte '00'
-    expect(() => dataToOutline(Data({ base16: '80' }))).toThrow() //truncated: continuation bit set with no next byte
-    expect(() => dataToOutline(Data({ base16: '8080808000' }))).toThrow() //five bytes for one span, past the 4-byte cap
+    expect(() => spanDecode(Data({ base16: '8000' }), 0)).toThrow() //non-canonical: two bytes encoding the value 0, canonical is one byte '00'
+    expect(() => spanDecode(Data({ base16: '80' }), 0)).toThrow() //truncated: continuation bit set with no next byte
+    expect(() => spanDecode(Data({ base16: '80808080' }), 0)).toThrow() //four continuation bytes and no end, past the 4-byte cap
+  })
+  test('names: has and check ask about a name from outside, and only undefined, null, and blank mean no name', () => {
+    expect(hasOutlineName('key1')).toBe(true)
+    expect(hasOutlineName('')).toBe(true) //blank is a name, the blank one
+    expect(hasOutlineName('Key1')).toBe(false)
+    expect(hasOutlineName('key 1')).toBe(false)
+    expect(hasOutlineName(5)).toBe(false)
+    expect(hasOutlineName(null)).toBe(false) //null isn't a name, though a lookup takes it to mean the blank one
+    expect(checkOutlineName('key1')).toBe('key1')
+    expect(() => checkOutlineName('Key1')).toThrow()
+
+    let o = Outline('x')
+    o.add(Data({ text: 'unnamed' }))
+    expect(o.list(undefined).length).toBe(1) //undefined and null mean the blank name
+    expect(o.list(null).length).toBe(1)
+    expect(() => o.list(0)).toThrow() //and 0 and false, though falsy, don't
+    expect(() => o.list(false)).toThrow()
+  })
+  test('values: no value is a Data of no bytes, the same in memory, in text, and in binary', () => {
+    let o = Outline('x')
+    expect(o.value().size()).toBe(0) //a new outline has no value, which is an empty Data, never null
+    o.value(Data({ base16: '' })) //and an empty Data set as a value is no value
+    expect(o.text()).toBe('x:\n')
+    expect(o.data().base16()).toBe('01780000') //the name's span 01 and the name x, then 00 for no value and 00 for no contents
+    expect(dataToOutline(o.data()).value().size()).toBe(0) //and it reads back the same way
+    expect(textToOutline('x:').value().size()).toBe(0)
+  })
+  test('writers sort a copy, so text and bytes come out canonical and the outline stays as it was built', () => {
+    let o = Outline('x')
+    o.add('b')
+    o.add('a')
+    expect(o.text()).toBe('x:\n  a:\n  b:\n') //the text comes out sorted
+    expect(o.data().base16()).toBe('017800080161000001620000') //and so do the bytes: x, then a, then b
+    expect(o.get(0).name()).toBe('b') //while the outline keeps the order it was built in
+    expect(o.get(1).name()).toBe('a')
+    o.sort() //and sorts in place only when asked
+    expect(o.get(0).name()).toBe('a')
+  })
+  test('the binary reader refuses contents out of order, so the same information is always the same bytes', () => {
+    expect(
+      dataToOutline(Data({ base16: '017800080161000001620000' })).text(),
+    ).toBe('x:\n  a:\n  b:\n') //x, holding a and then b
+    expect(() =>
+      dataToOutline(Data({ base16: '017800080162000001610000' })),
+    ).toThrow() //x, holding b and then a, out of order
+    expect(
+      dataToOutline(Data({ base16: '017800080161000001610000' })).length(),
+    ).toBe(2) //and two the same are fine, since a tie isn't out of order
   })
   test('binary form: arbitrary trees round-trip through dataToOutline and back, and trailing or malformed input is refused', () => {
     let roundTrip = (o) =>
@@ -1216,8 +1277,8 @@ describe.skipIf(!javascriptChosen)('Outline', () => {
 
 describe.skipIf(!javascriptChosen)('quoted encoding', () => {
   test('demonstration and round trips', () => {
-    expect(dataToQuoted(null)).toBe('') //null and blank string are valid to describe nothing here
-    expect(quotedToData('')).toBe(null)
+    expect(dataToQuoted(Data({ base16: '' }))).toBe('') //no bytes at all are blank quoted encoding
+    expect(quotedToData('').size()).toBe(0) //and blank quoted encoding is no bytes
 
     expect(quotedToData('48656c6c6f').text()).toBe('Hello')
     expect(quotedToData('48"ello"').text()).toBe('Hello') //multiple different valid encoded forms decode to the same data, unlike the encoding formats built into Data, which are all guaranteed and checked to be round-trip one-to-one
@@ -1242,8 +1303,9 @@ describe.skipIf(!javascriptChosen)('quoted encoding', () => {
     f(`The quote " character\n`, '"The quote "22" character"0a') //intentional design choice picking " because it looks like 22 ;)
   })
   test('blank describes nothing, and text that is not quoted encoding is refused', () => {
-    expect(dataToQuoted(null)).toBe('') //blank is valid quoted encoding for zero bytes,
-    expect(quotedToData('')).toBe(null) //and quotedToData returns null to indicate nothing
+    expect(dataToQuoted(Data({ base16: '' }))).toBe('') //blank is valid quoted encoding for zero bytes,
+    expect(quotedToData('').size()).toBe(0) //and quotedToData returns a Data of no bytes to indicate nothing
+    expect(() => dataToQuoted(null)).toThrow() //and null isn't a Data
 
     expect(() => quotedToData('00ff0g')).toThrow() //g is not valid base16
     expect(quotedToData('"x"00"y"00"z"').base16()).toBe('780079007a') //this is fine

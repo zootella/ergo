@@ -1471,7 +1471,7 @@ export async function hashStream({
 //
 
 /*
-Outline: A tree structure where each outline has a name (string), a value (Data or null), and contents (other outlines).
+Outline: A tree structure where each outline has a name (string), a value (Data, empty for none), and contents (other outlines).
 
 An Outline is like JSON, but stripped down to just one type of value: bytes. No strings vs numbers vs booleans vs nulls — just a name, binary data, and contents. This simplicity makes it useful as a canonical container for cryptographic data, configuration, and structured binary payloads where type richness would be overhead.
 
@@ -1480,8 +1480,8 @@ The closest inspiration is Bencoding (Bram Cohen, 2001), the serialization forma
 MessagePack (Furuhashi, 2008), CBOR (RFC 7049, 2013), and Protocol Buffers (Google, 2008) solve a different problem. They are general-purpose serialization formats with rich type systems — integers, floats, strings, arrays, maps, booleans, nulls, extension types. Powerful, but more complex than needed when all your values are just bytes. Protobuf additionally requires schema files compiled ahead of time. Outline is deliberately simpler.
 
 Outline has two serialization formats:
-- Text: indented lines like «name:"value"0a» using quoted encoding with dataToQuoted(). Visible in source code as template literals, explains itself in markdown documentation, diffs alongside code in version control. The parser is lenient about indentation width (2 spaces, 4 spaces, tabs) and accepts trailing whitespace and # comments on each line, so pasted or hand-edited text tolerates reasonable sloppiness.
-- Binary: span-prefixed length encoding (name size, name, value size, value, contents size, contents) with no delimiters or escaping. Compact and unambiguous — data stays the same size on the wire, unlike JSON which inflates binary with escape sequences.
+- Text: indented lines like «name:"value"0a» using quoted encoding with dataToQuoted(). Visible in source code as template literals, explains itself in markdown documentation, diffs alongside code in version control. The parser is lenient about indentation width (2 spaces, 4 spaces, tabs), accepts trailing whitespace and # comments on each line, and takes contents in any order, so pasted or hand-edited text tolerates reasonable sloppiness. The writer is canonical, sorted at every level.
+- Binary: span-prefixed length encoding (name size, name, value size, value, contents size, contents) with no delimiters or escaping. Compact and unambiguous — data stays the same size on the wire, unlike JSON which inflates binary with escape sequences. Strict, too: the reader takes only what the writer writes, sorted at every level.
 
 One value type (bytes), one tree structure, deterministic sort, a text form and a binary form. It runs anywhere JavaScript does — browser, Node, Worker — with no dependencies, no schema files, and no build step.
 
@@ -1495,20 +1495,35 @@ Rules for designing an outline that you're going to use in your application:
 - Outlines must be strict trees. No cycles, no shared subtrees--the same outline instance appearing in two places is rejected at serialization time. This matches the text form, which has no way to express sharing.
 */
 
+//true if s is a name an outline can have: lowercase letters and numerals, or blank; never throws, so a name from outside can be asked about first
+export function hasOutlineName(s) {
+  return hasString(s) && /^[a-z0-9]*$/.test(s)
+}
+//a guard: pass an outline name through, or throw because it has a character outside a-z and 0-9, or isn't a string at all
+export function checkOutlineName(s) {
+  if (!hasOutlineName(s))
+    throw new Error(`not an outline name: ${JSON.stringify(s)}`)
+  return s
+}
+let _emptyValue //the one empty Data every outline without a value holds, made on first use, so a program that never makes an outline never makes it
+//the value of an outline without one: a Data of no bytes, the same one for all of them
+function _noValue() {
+  if (!_emptyValue) _emptyValue = Data({ array: new Uint8Array(0) })
+  return _emptyValue
+}
+
 //make an outline, with an optional name and value, and then contents added to it; the essay above says what it's for and how to design one
 export function Outline(name, value) {
   let o = { type: 'Outline' } //the outline object we'll build and return
   let _name = '' //outlines can have names, [a-z0-9] only, or no name at all
-  let _value = null //and hold one Data value, optional, null for no value
+  let _value = _noValue() //and hold one Data value, which holds no bytes when there's no value
   let _contents = [] //and hold contents, an array of lower nested outlines
   o.length = () => _contents.length //how many we have
 
-  //normalize and validate a name for the setter and all lookups: falsy becomes blank, anything invalid throws
+  //normalize and validate a name for the setter and all lookups: undefined and null become blank, and anything else must be a name
   let _k = (k) => {
-    if (!k) return ''
-    if (!(typeof k == 'string' && /^[a-z0-9]*$/.test(k)))
-      throw new Error(`not an outline name: ${JSON.stringify(k)}`)
-    return k
+    if (k == undefined) return '' //== finds undefined and null together, the two ways to say no name
+    return checkOutlineName(k)
   }
 
   /*
@@ -1518,7 +1533,7 @@ export function Outline(name, value) {
   o.name('') sets o's name to blank, totally fine and useful in Outline
   o.name('key1') sets o's name to "key1" only numerals and lowercase letters are allowed
 
-  o.value() gets the value, a Data with bytes, or null if there's no value here (could still be contents, though!)
+  o.value() gets the value, a Data, which holds no bytes if there's no value here (could still be contents, though!)
   o.value(Data({text: 'alice@example.com'})) sets the value
   o.value(null) clears the value; outlines absolutely can be nameless and/or valueless
 
@@ -1532,7 +1547,7 @@ export function Outline(name, value) {
     if (p === undefined)
       return _value //get
     else if (p === null)
-      _value = null //set clear
+      _value = _noValue() //set clear
     else if (p.type == 'Data')
       _value = p //set to the given Data
     else throw new Error(`an outline's value is a Data or null: ${p}`)
@@ -1591,7 +1606,7 @@ export function Outline(name, value) {
   }
   //discard this outline's value and contents (but keep the name!)
   o.clear = () => {
-    _value = null
+    _value = _noValue()
     _contents = []
   }
   //sort all nested contents recursively so identical information produces identical serialization
@@ -1617,7 +1632,8 @@ export function Outline(name, value) {
 
 //express an outline as indented lines of text for code, documentation, and diffs
 function _outlineToText(o) {
-  _outlineFlat(o)
+  _outlineFlat(o) //guard against user-supplied cycles before sort
+  o = _sortedCopy(o) //write a sorted copy, so the text is canonical and the outline the caller has stays as it is
   //recursive: one line for this outline, then its contents at deeper indent
   let _compose = (o, indent) => {
     let s = indent + o.name() + ':' + dataToQuoted(o.value()) + '\n'
@@ -1664,8 +1680,7 @@ export function textToOutline(s) {
 
     let o = Outline()
     o.name(c.before)
-    let v = quotedToData(valuePart)
-    if (v !== null) o.value(v) //null means the quoted form was blank, leave the value null
+    o.value(quotedToData(valuePart)) //a blank quoted form is no bytes, which is no value
     parsed.push({ o, indent })
   }
 
@@ -1697,14 +1712,14 @@ export function textToOutline(s) {
 //serialize an outline to binary data for disk or wire
 function _outlineToData(o) {
   _outlineFlat(o) //guard against user-supplied cycles before sort
-  o.sort() //sort depth-first before we walk the tree, so the output is deterministic
+  o = _sortedCopy(o) //sort a copy depth-first before we walk the tree, so the output is deterministic, and the outline the caller has stays as it is
 
   //first pass: measure the exact size we'll need, so we can allocate one buffer and write into it
   let sizes = new Map() //memoize each outline's total byte size, so the second pass looks up contents sizes in O(1) instead of recomputing
   let _measure = (o) => {
     if (sizes.has(o)) return sizes.get(o)
     let nameBytes = o.name().length //names are [a-z0-9], so string length equals utf-8 byte count
-    let valueBytes = o.value() ? o.value().size() : 0
+    let valueBytes = o.value().size()
     let contentsBytes = 0
     for (let i = 0; i < o.length(); i++) contentsBytes += _measure(o.get(i))
     let total =
@@ -1727,7 +1742,7 @@ function _outlineToData(o) {
   }
   let _compose = (o) => {
     let nameArray = Uint8Array.from(o.name(), (c) => c.charCodeAt(0))
-    let valueArray = o.value() ? o.value().array() : new Uint8Array(0)
+    let valueArray = o.value().array()
     let contentsSize = 0
     for (let i = 0; i < o.length(); i++) contentsSize += _measure(o.get(i)) //O(1) lookup from the memoized map
 
@@ -1768,11 +1783,19 @@ export function dataToOutline(d) {
     if (nameSize > 0) o.name(String.fromCharCode(..._read(nameSize)))
 
     let valueSize = _span()
-    if (valueSize > 0) o.value(Data({ array: _read(valueSize) })) //zero size stays as default null
+    if (valueSize > 0) o.value(Data({ array: _read(valueSize) })) //zero size stays as the default, no value
 
     let contentsSize = _span()
     let contentsEnd = w + contentsSize
-    while (w < contentsEnd) o.add(_parse()) //parse contained outlines until we've consumed exactly contentsSize bytes
+    let previous //the outline parsed just before this one, at this level
+    while (w < contentsEnd) {
+      //parse contained outlines until we've consumed exactly contentsSize bytes
+      let c = _parse()
+      if (previous && _outlineCompare(previous, c) > 0)
+        throw new Error('the contents of an outline in binary are out of order') //the binary form is the canonical one, sorted at every level, so the same information is always the same bytes, and an outline's hash is its identity
+      o.add(c)
+      previous = c
+    }
     if (w != contentsEnd)
       throw new Error(`an outline's contents ran past their size`) //overran or underran the contents region, input is malformed
 
@@ -1783,6 +1806,15 @@ export function dataToOutline(d) {
   return root
 }
 
+//a copy of an outline with its contents sorted at every level, deepest first, for the writers; the values are shared rather than copied, since a Data's bytes are the same either way
+function _sortedCopy(o) {
+  let copy = Outline(o.name(), o.value())
+  let contents = []
+  for (let i = 0; i < o.length(); i++) contents.push(_sortedCopy(o.get(i))) //sort from the deepest levels up
+  contents.sort(_outlineCompare) //then sort this level
+  for (let c of contents) copy.add(c)
+  return copy
+}
 //make sure o doesn't have a cycle or duplicate
 function _outlineFlat(o) {
   let seen = new WeakSet()
@@ -1802,29 +1834,23 @@ function _outlineCompare(o1, o2) {
   if (o1.name() < o2.name()) return -1 //o1 wins with a lighter name
   if (o1.name() > o2.name()) return 1 //o2 wins with its lighter name
 
-  //same name, so we move on to compare value
-  let v1 = o1.value()
-  let v2 = o2.value()
-  if (v1 === null && v2 !== null) return -1 //null sorts before any value
-  if (v1 !== null && v2 === null) return 1
-  if (v1 !== null && v2 !== null) {
-    let a1 = v1.array()
-    let a2 = v2.array()
-    let overlappingValueSize = Math.min(a1.length, a2.length) //compare byte-by-byte up to the shorter length
-    for (let i = 0; i < overlappingValueSize; i++) {
-      if (a1[i] < a2[i]) return -1 //first differing byte decides the order
-      if (a1[i] > a2[i]) return 1
-    } //all overlapping value bytes match
-    if (a1.length < a2.length) return -1 //shorter value sorts first
-    if (a1.length > a2.length) return 1
-  }
+  //same name, so we move on to compare value; no value is an empty Data, which sorts before any value, since a shorter value sorts first
+  let a1 = o1.value().array()
+  let a2 = o2.value().array()
+  let overlappingValueSize = Math.min(a1.length, a2.length) //compare byte-by-byte up to the shorter length
+  for (let i = 0; i < overlappingValueSize; i++) {
+    if (a1[i] < a2[i]) return -1 //first differing byte decides the order
+    if (a1[i] > a2[i]) return 1
+  } //all overlapping value bytes match
+  if (a1.length < a2.length) return -1 //shorter value sorts first
+  if (a1.length > a2.length) return 1
 
   //value tied, so we examine contents pairwise
   let overlappingContentsCount = Math.min(o1.length(), o2.length())
   for (let i = 0; i < overlappingContentsCount; i++) {
     //compare contents pairwise at each index
     let c = _outlineCompare(o1.get(i), o2.get(i))
-    if (c) return c //o.sort() calls us after sorting deeper levels first, so contents at each level are already in order
+    if (c) return c //every caller sorts or checks deeper levels first, so contents at each level are already in order
   }
   if (o1.length() < o2.length()) return -1 //all shared contents match, fewer contents sorts first
   if (o1.length() > o2.length()) return 1
@@ -1840,9 +1866,17 @@ function _outlineCompare(o1, o2) {
 /*
 Span: a variable-length integer encoding for size prefixes in the binary format. Each byte contributes 7 bits of value; the high bit is 1 to continue, 0 to stop. Least-significant byte first (little-endian), matching LEB128 (WebAssembly, DWARF debug info) and Protocol Buffers' varint. Capped at 4 bytes (28 bits), giving a maximum value of 268,435,455 — about 256 MB. Outlines are designed to be small packets, not bulk storage, so this ceiling is generous. An Outline that approaches this size is almost certainly a misuse.
 */
+//a size as a span, a Data of 1 to 4 bytes, the way an outline's binary form writes each size
+export function spanEncode(n) {
+  return Data({ array: _spanEncode(n) })
+}
+//read the span at an offset into a Data, answering {value, bytesRead}, so a reader can move past it
+export function spanDecode(data, offset) {
+  return _spanDecode(_checkData(data).array(), _checkCount(offset))
+}
 //a size as a span's bytes, at most 4
 function _spanEncode(n) {
-  if (n < 0 || n >= 0x10000000)
+  if (!(hasInt(n) && n >= 0 && n < 0x10000000))
     throw new Error(`not a size a span can hold: ${n}`) //max 268,435,455 (~256 MB)
   let bytes = []
   do {
@@ -1901,17 +1935,15 @@ function _quotable(c) {
     c != 0x22 //but not the double quotation mark itself, which is our delimiter!
   )
 }
-//encode the given Data or null as text in quoted encoding
-export function dataToQuoted(nullOrData) {
-  if (nullOrData === null) return '' //null means nothing; a blank string is valid quoted encoding for zero bytes
-
-  let a = _checkData(nullOrData).array()
+//encode the given Data as text in quoted encoding, where no bytes at all are blank text
+export function dataToQuoted(data) {
+  let a = _checkData(data).array()
 
   let textCount = 0
   for (let i = 0; i < a.length; i++) {
     if (_quotable(a[i])) textCount++
   }
-  if (textCount * 2 < a.length) return nullOrData.base16() //under half quotable? it's random or binary, just use base16; ties go to quoted
+  if (textCount * 2 < a.length) return data.base16() //under half quotable? it's random or binary, just use base16; ties go to quoted
 
   let s = ''
   let i = 0
@@ -1930,10 +1962,9 @@ export function dataToQuoted(nullOrData) {
   }
   return s
 }
-//convert quoted text back to Data, or null for zero size
+//convert quoted text back to Data, where blank text is valid quoted encoding to describe zero bytes of nothing
 export function quotedToData(s) {
   checkString(s)
-  if (!s.length) return null //blank string "" is valid quoted encoding to describe zero bytes of nothing
   let bytes = _quotedBytes(s)
   if (!bytes) throw new Error(`not quoted encoding: ${JSON.stringify(s)}`)
   return Data({ array: new Uint8Array(bytes) })
