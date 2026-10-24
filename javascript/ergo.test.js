@@ -43,6 +43,11 @@ import {
   hashFile,
   hashStream,
   FujiHasher,
+  Outline,
+  textToOutline,
+  dataToOutline,
+  dataToQuoted,
+  quotedToData,
 } from './ergo.js'
 import { call } from './driver.js'
 import { startEditions, stopEditions, chosenEditions } from './editions.js'
@@ -922,6 +927,337 @@ describe.skipIf(!javascriptChosen)('fuji hashes', () => {
   })
 })
 
+//              _   _ _
+//   ___  _   _| |_| (_)_ __   ___
+//  / _ \| | | | __| | | '_ \ / _ \
+// | (_) | |_| | |_| | | | | |  __/
+//  \___/ \__,_|\__|_|_|_| |_|\___|
+//
+
+describe.skipIf(!javascriptChosen)('Outline', () => {
+  test('main usage: build from a template literal, read through the navigation API, round-trip through text and binary', () => {
+    let o = textToOutline(deindent`
+      orchard:
+        tree:"apple"
+        season:"autumn"
+        basket:
+          color:"red"
+          count:"12"
+    `)
+
+    //n navigates to a named outline and throws if missing; m makes it if missing then navigates
+    expect(o.n('tree').value().text()).toBe('apple')
+    expect(o.n('basket').n('color').value().text()).toBe('red')
+    expect(() => o.n('missing')).toThrow() //thrown, not silent
+    o.m('picker').value(Data({ text: 'bear' })) //create and set in one step
+    expect(o.n('picker').value().text()).toBe('bear')
+
+    //round-trip through both serialization formats, confirming identity
+    expect(textToOutline(o.text()).data().base16()).toBe(o.data().base16()) //text → outline → same bytes
+    expect(dataToOutline(o.data()).text()).toBe(o.text()) //binary → outline → same text
+  })
+  test('binary form is deterministic: the same information always produces the same bytes, regardless of insert order', () => {
+    //two outlines constructed differently, but with the same information
+    let a = Outline('garden')
+    a.m('beds')
+      .m('flowers')
+      .add(Outline('name', Data({ text: 'marigold' })))
+    a.m('beds')
+      .m('herbs')
+      .add(Outline('name', Data({ text: 'basil' })))
+    a.add(Outline('season', Data({ text: 'spring' })))
+
+    let b = textToOutline(deindent`
+      garden:
+        season:"spring"
+        beds:
+          herbs:
+            name:"basil"
+          flowers:
+            name:"marigold"
+    `)
+
+    //identical bytes means the hash of an outline is a stable identity for its contents
+    expect(a.data().base16()).toBe(b.data().base16())
+  })
+  test('contents: add, has, list, remove, clear', () => {
+    let o = Outline('pantry')
+
+    //add takes an Outline, a name string, or Data; multiple outlines can share a name, and unnamed outlines are supported
+    o.add(Outline('jar', Data({ text: 'honey' })))
+    o.add(Outline('jar', Data({ text: 'jam' })))
+    o.add('crock') //string shorthand: adds an outline with this name and no value
+    o.add(Data({ text: 'salt' })) //data shorthand: adds an unnamed outline with this value
+    o.add(Data({ text: 'pepper' }))
+
+    expect(o.length()).toBe(5)
+    expect(o.has('jar')).toBe(true)
+    expect(o.has('jug')).toBe(false)
+
+    //list returns all contained outlines with a given name, or all unnamed if no name passed
+    expect(o.list('jar').length).toBe(2)
+    expect(o.list().length).toBe(2) //the two unnamed
+
+    //falsy lookups all mean "look for blank name"
+    expect(o.list(null).length).toBe(2)
+    expect(o.list('').length).toBe(2)
+
+    o.remove('jar')
+    expect(o.length()).toBe(3)
+    expect(o.list('jar').length).toBe(0)
+
+    o.clear() //discards value and contents, but keeps the name
+    expect(o.length()).toBe(0)
+    expect(o.name()).toBe('pantry')
+  })
+  test('validation: names must be [a-z0-9], values must be Data or null', () => {
+    //names are restricted to lowercase letters and digits; no ambiguity like the HTTP header case-folding mess
+    expect(() => Outline('Key1')).toThrow() //uppercase
+    expect(() => Outline('key-1')).toThrow() //punctuation
+    expect(() => Outline().name(' ')).toThrow() //whitespace
+    expect(() => Outline().n('Key1')).toThrow() //lookups validate too, so you get a loud error instead of a silent "not found"
+
+    //values are Data or null; null is "no value"
+    let o = Outline('x')
+    expect(() => o.value(42)).toThrow()
+    expect(() => o.value('just a string')).toThrow()
+    o.value(Data({ text: 'something' }))
+    expect(o.value().text()).toBe('something')
+    o.value(null) //null always valid, clears to no value
+    expect(o.value()).toBe(null)
+  })
+  test('textToOutline indent algorithm: root at zero, child indents can be any width but must be consistent among siblings', () => {
+    //dots stand in for spaces so the indentation is visible at a glance, immune to editor auto-formatting
+    let dots = (s) => s.replace(/\./g, ' ')
+    let good = (s) => expect(() => textToOutline(dots(s))).not.toThrow()
+    let poor = (s) => expect(() => textToOutline(dots(s))).toThrow()
+
+    good(deindent`
+      a:
+      ..b:
+      ..c:
+    `) //two children at the same indent
+
+    good(deindent`
+      a:
+      ....b:
+      ....c:
+    `) //4-space works too--it's about consistency, not width
+
+    good(deindent`
+      a:
+      ....b:
+      ......c:
+      ......e:
+      ..........f:
+      ..........g:
+      ....d:
+    `) //deeper levels can use different widths, each parent's contents just need to agree among themselves
+
+    poor(deindent`
+      ..a:
+    `) //root must be at zero indent
+
+    poor(deindent`
+      a:
+      b:
+    `) //two roots at zero indent is two outlines, not one
+
+    poor(deindent`
+      a:
+      ..b:
+      c:
+    `) //outdenting back to zero is also two roots
+
+    poor(deindent`
+      a:
+      ..b:
+      .c:
+    `) //a child at an indent that doesn't match its siblings is ambiguous
+  })
+  test("textToOutline rejects malformed structure; quoted encoding in values throws through quotedToData's own validation", () => {
+    //structural errors
+    expect(() => textToOutline('')).toThrow() //no outline to parse
+    expect(() => textToOutline('nocolon')).toThrow() //line without a colon--can't split name from value
+    expect(() =>
+      textToOutline(deindent`
+        a:
+          b:
+        c:
+      `),
+    ).toThrow() //valid tree followed by a second root
+
+    //a blank-everywhere line--no name, no value, no contents--is the minimum valid outline
+    let o = textToOutline(':')
+    expect(o.name() == '' && o.value() === null && o.length() == 0).toBe(true)
+  })
+  test('textToOutline accepts trailing whitespace and # comments on each line, so pasted or hand-edited text tolerates reasonable sloppiness', () => {
+    //dots stand in for spaces so the trailing whitespace is visible
+    let dots = (s) => s.replace(/\./g, ' ')
+    let good = (s) => expect(() => textToOutline(dots(s))).not.toThrow()
+    let poor = (s) => expect(() => textToOutline(dots(s))).toThrow()
+
+    //baseline: no trailing content
+    good(deindent`
+      a:
+      ..b:"7"
+    `)
+
+    //trailing whitespace after the value
+    good(deindent`
+      a:
+      ..b:"7".
+    `)
+
+    //# starts a comment; everything from # to end of line is ignored
+    good(deindent`
+      a:
+      ..b:"7"#comment
+    `)
+
+    //whitespace between the value and the comment is fine
+    good(deindent`
+      a:
+      ..b:"7".#comment
+    `)
+
+    //# inside a quoted value is not a comment marker
+    good(deindent`
+      a:
+      ..b:"room #9"
+    `)
+
+    //trailing content that is neither whitespace nor a comment is rejected
+    poor(deindent`
+      a:
+      ..b:"7".extra
+    `)
+  })
+  test('span encoding: variable-length integer used for size prefixes in the binary form', () => {
+    //an outline with no name and no contents, and a value of n bytes, writes the name's span 00, then the value's span, the n bytes, and the contents span 00; this reads the value's span, and reads the outline back
+    function span(n) {
+      let a = Outline('', Data({ array: new Uint8Array(n) }))
+        .data()
+        .array()
+      let back = dataToOutline(Data({ array: a }))
+      expect(back.value() ? back.value().size() : 0).toBe(n) //decode
+      return Data({ array: a.subarray(1, a.length - 1 - n) }).base16() //encode
+    }
+
+    //boundaries at each byte threshold--7 bits per byte, up to 4 bytes
+    expect(span(0)).toBe('00')
+    expect(span(127)).toBe('7f') //1 byte: 0 through 127
+    expect(span(128)).toBe('8001')
+    expect(span(16383)).toBe('ff7f') //2 bytes: 128 through 16383
+    expect(span(16384)).toBe('808001')
+    expect(span(2097151)).toBe('ffff7f') //3 bytes: 16384 through 2097151
+    expect(span(2097152)).toBe('80808001') //4 bytes: 2097152 through 268435455, the last of which, ffffff7f, would take a value of 256 MB to reach this way
+
+    //decode rejects non-canonical and truncated input
+    expect(() => dataToOutline(Data({ base16: '80000000' }))).toThrow() //non-canonical: two bytes encoding the value 0, canonical is one byte '00'
+    expect(() => dataToOutline(Data({ base16: '80' }))).toThrow() //truncated: continuation bit set with no next byte
+    expect(() => dataToOutline(Data({ base16: '8080808000' }))).toThrow() //five bytes for one span, past the 4-byte cap
+  })
+  test('binary form: arbitrary trees round-trip through dataToOutline and back, and trailing or malformed input is refused', () => {
+    let roundTrip = (o) =>
+      expect(dataToOutline(o.data()).data().base16()).toBe(o.data().base16())
+
+    roundTrip(Outline()) //empty outline
+    roundTrip(Outline('leaf', Data({ text: 'value' }))) //simple leaf
+    let deep = Outline('a')
+    deep
+      .m('b')
+      .m('c')
+      .m('d')
+      .value(Data({ text: 'deep' }))
+    roundTrip(deep)
+    let mix = Outline('mix')
+    mix.add(Data({ base16: '01' }))
+    mix.add(Data({ base16: '02' }))
+    mix.add(Outline('tag', Data({ text: 'label' })))
+    roundTrip(mix) //mixed named and unnamed contents
+
+    expect(() => dataToOutline(Data({ base16: '000000ff' }))).toThrow() //trailing byte after a valid empty outline
+  })
+  test('serialization rejects cycles with a clear error, not an unhelpful RangeError from stack exhaustion', () => {
+    //require a clean throw, not a stack overflow--the point is to give the caller a meaningful error
+    let rejectsCycle = (f) => expect(f).toThrow(/appears twice in its tree/)
+
+    //simplest cycle: an outline that contains itself
+    let self = Outline('self')
+    self.add(self)
+    rejectsCycle(() => self.data())
+    rejectsCycle(() => self.text())
+
+    //longer cycle: two outlines containing each other
+    let a = Outline('a')
+    let b = Outline('b')
+    a.add(b)
+    b.add(a)
+    rejectsCycle(() => a.data())
+    rejectsCycle(() => a.text())
+
+    //DAG (the same outline instance referenced from two sibling subtrees) is also rejected--the text form can't express sharing, so the binary form won't either
+    let shared = Outline('shared', Data({ text: 'value' }))
+    let dag = Outline('dag')
+    dag.m('left').add(shared)
+    dag.m('right').add(shared)
+    rejectsCycle(() => dag.data())
+    rejectsCycle(() => dag.text())
+  })
+})
+
+//                    _           _                            _ _
+//   __ _ _   _  ___ | |_ ___  __| |   ___ _ __   ___ ___   __| (_)_ __   __ _
+//  / _` | | | |/ _ \| __/ _ \/ _` |  / _ \ '_ \ / __/ _ \ / _` | | '_ \ / _` |
+// | (_| | |_| | (_) | ||  __/ (_| | |  __/ | | | (_| (_) | (_| | | | | | (_| |
+//  \__, |\__,_|\___/ \__\___|\__,_|  \___|_| |_|\___\___/ \__,_|_|_| |_|\__, |
+//     |_|                                                               |___/
+
+describe.skipIf(!javascriptChosen)('quoted encoding', () => {
+  test('demonstration and round trips', () => {
+    expect(dataToQuoted(null)).toBe('') //null and blank string are valid to describe nothing here
+    expect(quotedToData('')).toBe(null)
+
+    expect(quotedToData('48656c6c6f').text()).toBe('Hello')
+    expect(quotedToData('48"ello"').text()).toBe('Hello') //multiple different valid encoded forms decode to the same data, unlike the encoding formats built into Data, which are all guaranteed and checked to be round-trip one-to-one
+    //remaining tests use examples which happen to be round trip-able
+    function f(s, q) {
+      expect(dataToQuoted(Data({ text: s }))).toBe(q)
+      expect(quotedToData(q).text()).toBe(s)
+    }
+
+    f('hello', '"hello"') //pure text gets quoted
+    f('a', '"a"')
+    f(' ', '" "')
+
+    f('A\0', '"A"00') //text with terminators
+    f('AB\0', '"AB"00')
+    f(`Hello\r\n`, '"Hello"0d0a') //retro Windows-style
+    f('Hello\0', '"Hello"00')
+    f('\tIndented', '09"Indented"')
+
+    f('"', '22')
+    f('"hello"', '22"hello"22')
+    f(`The quote " character\n`, '"The quote "22" character"0a') //intentional design choice picking " because it looks like 22 ;)
+  })
+  test('blank describes nothing, and text that is not quoted encoding is refused', () => {
+    expect(dataToQuoted(null)).toBe('') //blank is valid quoted encoding for zero bytes,
+    expect(quotedToData('')).toBe(null) //and quotedToData returns null to indicate nothing
+
+    expect(() => quotedToData('00ff0g')).toThrow() //g is not valid base16
+    expect(quotedToData('"x"00"y"00"z"').base16()).toBe('780079007a') //this is fine
+    expect(() => quotedToData('"x"00"y"00"z')).toThrow() //missing a quote
+    expect(() => quotedToData('x"00"y"00"z"')).toThrow()
+    expect(() => quotedToData('g')).toThrow() //single non-base16 character
+    expect(() => quotedToData('000')).toThrow() //odd number of base16 digits
+    expect(() => quotedToData('"中文"')).toThrow() //only ASCII allowed inside quotes
+    expect(() => quotedToData('"Hello\n"')).toThrow()
+    expect(() => quotedToData('0D0A')).toThrow() //uppercase base16 rejected, lowercase only
+    expect(() => quotedToData(5)).toThrow() //and something that isn't a string at all
+  })
+})
+
 //           _ _ _   _
 //   ___  __| (_) |_(_) ___  _ __  ___
 //  / _ \/ _` | | __| |/ _ \| '_ \/ __|
@@ -1205,6 +1541,70 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
       }
       console.log(
         `javascript alone hashed one mebibyte again and again: ${said.join(', ')}`,
+      )
+    },
+    (fuzzSeconds + 60) * Time.second,
+  )
+
+  test.skipIf(!javascriptChosen)(
+    'visual inspection: 50 random 32-byte values, the size of a sha256 hash, in quoted encoding',
+    () => {
+      let s = ''
+      for (let i = 0; i < 50; i++)
+        s += '\n' + dataToQuoted(Data({ random: 32 }))
+      console.log(s)
+    },
+  )
+
+  test.skipIf(!javascriptChosen)(
+    'length demonstration: quoted encoding on random 32-byte values, the size of a sha256 hash',
+    () => {
+      let plain = 0
+      let shorter = 0
+      let same = 0
+      let longer = 0
+      let total = 0
+      let base16Length = 32 * 2
+      let stop = Date.now() + fuzzSeconds * Time.second
+      while (Date.now() < stop) {
+        let d = Data({ random: 32 })
+        let q = dataToQuoted(d)
+        let isPlain = q == d.base16()
+        if (isPlain) plain++
+        else if (q.length < base16Length) shorter++
+        else if (q.length > base16Length) longer++
+        else same++
+        total++
+      }
+      let quoted = shorter + same + longer
+      let percent = (n) => ((n / total) * 100).toFixed(3)
+      console.log(
+        '\n' +
+          deindent`
+            ${total} random 32-byte values in ${fuzzSeconds} seconds
+            ${percent(plain)}% stayed plain base16
+            ${percent(quoted)}% got quoted sections: ${percent(shorter)}% shorter, ${percent(same)}% same, ${percent(longer)}% longer
+          `,
+      )
+    },
+    (fuzzSeconds + 60) * Time.second,
+  )
+
+  test.skipIf(!javascriptChosen)(
+    'quoted encoding round-trips random data, in javascript alone, in-process',
+    () => {
+      let stop = Date.now() + fuzzSeconds * Time.second
+      let cycles = 0
+      while (Date.now() < stop) {
+        let d = Data({ random: 1 + Math.floor(Math.random() * Size.kb) })
+        let q = dataToQuoted(d)
+        let u = quotedToData(q)
+        if (u.base16() != d.base16())
+          throw new Error(`${d.base16()} did not round-trip`) //a plain check rather than expect, which would cost more than the functions under test
+        cycles++
+      }
+      console.log(
+        `javascript alone made ${cycles} quoted encoding round trips in ${fuzzSeconds} seconds`,
       )
     },
     (fuzzSeconds + 60) * Time.second,

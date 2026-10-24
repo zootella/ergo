@@ -4,7 +4,7 @@ This file is for later: the day a project that calls icarus's helpers switches t
 
 Two migrations share the word. The first is happening now. ergo is bringing in icarus's helpers, the JavaScript in the application ergo grew out of, family by family, and as each family comes over, some of it changes, since what fits a JavaScript application on the web doesn't always fit a library in four languages: an answer here, a refusal there, a helper left behind. CLAUDE.md's flow describes that work. The second comes later, once a family is in ergo: a project that has been using icarus, the application ergo grew out of among them, replaces its calls to icarus with calls to ergo. Each change the first migration makes is a landmine for the second, so each is recorded here as it's made, family by family, for checking a project's call sites as it moves, while it leans on its own tests.
 
-ergo's comments and documentation describe ergo as it is, and leave the differences to this file. Each claim was checked against icarus's own code, core.js and level0.js, in October 2026, most of them by running it beside ergo's. icarus is JavaScript, so this file uses the JavaScript edition's names. Outline and quoted encoding come over next, and their sections will follow.
+ergo's comments and documentation describe ergo as it is, and leave the differences to this file. Each claim was checked against icarus's own code, core.js and level0.js, in October 2026, most of them by running it beside ergo's. icarus is JavaScript, so this file uses the JavaScript edition's names.
 
 ## Everywhere
 
@@ -80,3 +80,9 @@ ergo's comments and documentation describe ergo as it is, and leave the differen
 - `hashFile`, `hashStream`, and `hashProtocol` take the same arguments and give the same answers. ergo's vectors pin icarus's own answers.
 - The status objects time themselves with `Date.now()`, not icarus's `Now()`, so a simulated clock doesn't move them.
 - `hashStream` calls `onProgress` once for each read that completes one or more pieces, and once at the end. icarus called it once for every piece, the last fragment included, and then at the end, so a read that completes two pieces made two calls there and makes one here. And icarus also checked the abort signal before hashing each piece, where ergo checks before each read and before the final hashes.
+
+## Outline and quoted encoding
+
+- `Outline`, `textToOutline`, `dataToOutline`, `dataToQuoted`, and `quotedToData` keep their names and their shapes.
+- **Blank lines in a text outline** are the lines `hasText` calls blank, by Unicode's whitespace, where icarus used JavaScript's `trim`. So a line that is only a byte order mark is no longer skipped, and fails for having no colon, and a line that is only U+0085 is now skipped.
+- **The readers check what they're handed.** `textToOutline` and `quotedToData` refuse anything that isn't a string, where icarus's `quotedToData(5)` quietly answered null. `dataToOutline` and `dataToQuoted` refuse anything that isn't a Data, with an Error that says so.
