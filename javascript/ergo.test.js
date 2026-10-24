@@ -1334,6 +1334,29 @@ describe.skipIf(!javascriptChosen)('Outline', () => {
       comb.data().base16(),
     )
   })
+  test('an outline goes as deep as memory allows, since every walk keeps a stack of its own: two chains ten thousand levels down write, read back, sort, and compare', () => {
+    //the text form isn't here, since a line's indent grows with its depth, so the text of an outline this deep would be a hundred million spaces
+    let chain = (bottom) => {
+      let top = Outline('a')
+      let o = top
+      for (let i = 0; i < 10000; i++) o = o.m('a')
+      o.value(Data({ base16: bottom }))
+      return top
+    }
+    let bottomOf = (o) => {
+      while (o.length() > 0) o = o.get(0)
+      return o
+    }
+    let o = Outline('x')
+    o.add(chain('01'))
+    o.add(chain('00')) //the same all the way down but the value at the bottom, and in the wrong order, so putting them in order compares ten thousand levels deep
+    let d = o.data()
+    let back = dataToOutline(d)
+    expect(back.data().base16()).toBe(d.base16())
+    expect(bottomOf(back.get(0)).value().base16()).toBe('00') //the bytes came out in order
+    o.sort()
+    expect(bottomOf(o.get(0)).value().base16()).toBe('00') //and sort put them in order, too
+  })
   test('an outline is an object of its own, with the type Outline', () => {
     let a = Outline('a')
     let b = Outline('b')
