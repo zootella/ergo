@@ -48,11 +48,6 @@ export function checkString(s) {
   if (!hasString(s)) throw new Error(`not a string: ${s}`)
   return s
 }
-//a value the way an error message shows it: text in quotes with its escapes, so blank and whitespace are visible, and anything else the way javascript writes it, so a promise shows as [object Promise] rather than json's {}
-function _quote(v) {
-  if (hasString(v)) return JSON.stringify(v)
-  return String(v)
-}
 
 /*************************************************************************/
 /*                                                                       */
@@ -98,7 +93,7 @@ export function hasText(s) {
 }
 //a guard: pass the text through, or throw because the caller handed us a string that's blank or just whitespace, or something that isn't a string at all
 export function checkText(s) {
-  if (!hasText(s)) throw new Error(`not text: ${_quote(s)}`)
+  if (!hasText(s)) throw new Error(`not text: ${JSON.stringify(s)}`)
   return s //pass the text through
 }
 
@@ -173,13 +168,14 @@ export function cut2(s, tag1, tag2) {
 //what comes after the last tag in s, or throw because s doesn't have the tag at all
 export function cutAfterLast(s, tag) {
   let c = cutLast(s, tag)
-  if (!c.found) throw new Error(`no ${_quote(tag)} in ${_quote(s)}`) //make sure s is what we expect
+  if (!c.found)
+    throw new Error(`no ${JSON.stringify(tag)} in ${JSON.stringify(s)}`) //make sure s is what we expect
   return c.after
 }
 //a guard: pass a tag to cut at through, or throw because it's blank or not a string; whitespace is fine
 function _checkCutTag(tag) {
   if (!(hasString(tag) && tag.length > 0))
-    throw new Error(`not a tag to cut at: ${_quote(tag)}`)
+    throw new Error(`not a tag to cut at: ${JSON.stringify(tag)}`)
   return tag
 }
 
@@ -520,7 +516,7 @@ export function isoToTick(s) {
     t = Date.UTC(y, mo - 1, d, h, i, sec, ms) //a month is 0 through 11 here, and february 30 rolls into march
   }
   if (!(t >= 0 && t <= lastTick) || tickToIso(t) != s)
-    throw new Error(`not the iso form of a tick: ${_quote(s)}`) //the round trip is the final check, catching the rolled february 30 and a year under 100 that Date.UTC moved to the 1900s
+    throw new Error(`not the iso form of a tick: ${JSON.stringify(s)}`) //the round trip is the final check, catching the rolled february 30 and a year under 100 that Date.UTC moved to the 1900s
   return t
 }
 
@@ -552,7 +548,7 @@ export function tickToText(t) {
 export function textToTick(s) {
   let t = _parseText(s)
   if (t === false || tickToText(t) != s)
-    throw new Error(`not the short form of a tick: ${_quote(s)}`) //the round trip is the final check, catching february 30 and a padded or deeper text alike
+    throw new Error(`not the short form of a tick: ${JSON.stringify(s)}`) //the round trip is the final check, catching february 30 and a padded or deeper text alike
   return t
 }
 //read the short form leniently enough to compute a tick, or false; textToTick above makes it strict with the round trip
@@ -704,7 +700,7 @@ export function hasTag(s) {
 
 //a guard: pass a tag through, or throw because the caller handed us something that isn't one
 export function checkTag(s) {
-  if (!hasTag(s)) throw new Error(`not a tag: ${_quote(s)}`)
+  if (!hasTag(s)) throw new Error(`not a tag: ${JSON.stringify(s)}`)
   return s
 }
 
