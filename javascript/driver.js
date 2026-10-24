@@ -63,6 +63,8 @@ const adapters = {
     let status = await ergo.hashStream({ stream, size, protocol })
     return { tipHash: status.tipHash, pieceHash: status.pieceHash }
   },
+  //deindent is a tag in javascript and takes text in the other editions, so the protocol hands it one piece of text, the way a template literal with no fields would
+  deindent: (s) => ergo.deindent([s]),
   //a FujiHasher takes the size it's told, the pieces to feed it in order, and a protocol, and answers both hashes, or refuses when the pieces don't add up to the size
   FujiHasher: (size, pieces, protocol) => {
     let h = ergo.FujiHasher({ size, protocol })
