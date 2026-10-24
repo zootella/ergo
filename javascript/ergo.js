@@ -26,6 +26,234 @@ export function checkInt(i) {
   return i
 }
 
+//  _            _
+// | |_ _____  _| |_
+// | __/ _ \ \/ / __|
+// | ||  __/>  <| |_
+//  \__\___/_/\_\\__|
+//
+
+/*
+A string is a type, and text is a string that holds something. hasString asks only about the type: is this a string at all, blank and whitespace included. In Rust and Go every string parameter already is one, so there it always answers true, and it's in all four editions to keep them alike. hasText asks about what's inside: a string with at least one character that isn't whitespace, so "a" and " a " are text, while "", " ", and a tab and a newline aren't.
+
+Whitespace means one thing everywhere in ergo: the 25 characters on Unicode's White_Space list, and trim takes them off both ends of a string. Each platform's own trim keeps a list of its own. JavaScript's differs from Unicode's at exactly two characters of the 1,112,064: it trims the byte order mark, U+FEFF, which Unicode doesn't call whitespace, and keeps the next line control, U+0085, which Unicode does. Python's strip also trims the four separator controls, U+001C through U+001F, and Rust's trim and Go's TrimSpace follow Unicode's list already. So ergo uses Unicode's list in every edition, and trim, hasText, deindent, and safefill agree everywhere about what whitespace is.
+*/
+
+//true if s is a string, blank and whitespace included; never throws
+export function hasString(s) {
+  return typeof s == 'string'
+}
+//a guard: pass a string through, or throw because the caller handed us something else
+export function checkString(s) {
+  if (!hasString(s)) throw new Error(`not a string: ${s}`)
+  return s
+}
+//a value the way an error message shows it: text in quotes with its escapes, so blank and whitespace are visible, and anything else the way javascript writes it, so a promise shows as [object Promise] rather than json's {}
+function _quote(v) {
+  if (hasString(v)) return JSON.stringify(v)
+  return String(v)
+}
+
+/*************************************************************************/
+/*                                                                       */
+/*                                  (`-.                                 */
+/*                                   \  `                                */
+/*      /)         ,   '--.           \    `                             */
+/*     //     , '          \/          \   `   `                         */
+/*    //    ,'              ./         /\    \>- `   ,----------.        */
+/*   ( \  ,'    .-.-._        /      ,' /\    \   . `            `.      */
+/*    \ \'     /.--. .)       ./   ,'  /  \     .      `           `.    */
+/*     \     -{/    \ .)        / /   / ,' \       `     `-----.     \   */
+/*     <\      )     ).:)       ./   /,' ,' \        `.  /\)    `.    \  */
+/*      >^,  //     /..:)       /   //--'    \         `(         )    ) */
+/*       | ,'/     /. .:)      /   (/         \          \       /    /  */
+/*       ( |(_    (...::)     (                \       .-.\     /   ,'   */
+/*       (O| /     \:.::)                      /\    ,'   \)   /  ,'     */
+/*        \|/      /`.:::)                   ,/  \  /         (  /       */
+/*                /  /`,.:)                ,'/    )/           \ \       */
+/*              ,' ,'.'  `:>-._._________,<;'    (/            (,'       */
+/*            ,'  /  |     `^-^--^--^-^-^-'                              */
+/*  .--------'   /   |                                                   */
+/* (       .----'    |   *************************************************/
+/*  \ <`.  \         |   */
+/*   \ \ `. \        |   */ // Make sure s is a string that has some text,
+/*    \ \  `.`.      |   */ // meaning it's not blank, and not just space
+/*     \ \   `.`.    |   */
+/*      \ \    `.`.  |   */
+/*       \ \     `.`.|   */
+/*        \ \      `.`.  */
+/*         \ \     ,^-'  */
+/*          \ \    |     */
+/*           `.`.  |     */
+/*              .`.|     */
+/*               `._>    */
+/*                       */
+/*       g o o d w i n   */
+/*                       */
+/*************************/
+
+//true if s is text: a string with at least one character that isn't whitespace, so " a " is text and " " isn't; never throws
+export function hasText(s) {
+  return hasString(s) && trim(s).length > 0
+}
+//a guard: pass the text through, or throw because the caller handed us a string that's blank or just whitespace, or something that isn't a string at all
+export function checkText(s) {
+  if (!hasText(s)) throw new Error(`not text: ${_quote(s)}`)
+  return s //pass the text through
+}
+
+//take whitespace off both ends of s, by Unicode's list, which differs from s.trim() at two characters, as the essay above says
+export function trim(s) {
+  checkString(s)
+  let start = 0 //the first character to keep
+  let end = s.length //just past the last one
+  while (start < end && _isWhitespace(s[start])) start++ //a loop rather than a regular expression ending in $, which would retry from every whitespace inside a long string
+  while (end > start && _isWhitespace(s[end - 1])) end--
+  return s.slice(start, end)
+}
+//take whitespace off the end of s alone, by the same list, for deindent's lines
+function _trimEnd(s) {
+  let end = s.length
+  while (end > 0 && _isWhitespace(s[end - 1])) end--
+  return s.slice(0, end)
+}
+const whitespaceCharacter = /^\p{White_Space}$/u //one character on Unicode's list; all 25 are in the basic plane, a single code unit each, so checking a string a code unit at a time finds every one
+//true if c, a single code unit, is whitespace
+function _isWhitespace(c) {
+  return whitespaceCharacter.test(c)
+}
+
+/*
+cut finds a tag in text and cuts the text around it: what's before, the tag itself, and what's after, along with whether it found the tag at all. cutLast does the same from the end, cut2 finds two tags in order and the middle between them, and cutAfterLast is for text whose shape you already know, answering what comes after the last tag, and throwing when the tag isn't there.
+
+A tag is any string of at least one character, whitespace included, so a space, a tab, or a newline can be the tag to cut at. The blank string can't: it would be found at the start of everything, so a loop that cuts until nothing is left would never end.
+*/
+
+//find the first tag in s, and cut s around it
+export function cut(s, tag) {
+  checkString(s)
+  _checkCutTag(tag)
+  let i = s.indexOf(tag)
+  if (i == -1) return { found: false, before: s, tag: '', after: '' }
+  return {
+    found: true,
+    before: s.slice(0, i),
+    tag: s.slice(i, i + tag.length),
+    after: s.slice(i + tag.length),
+  }
+}
+//find the last tag in s, and cut s around it
+export function cutLast(s, tag) {
+  checkString(s)
+  _checkCutTag(tag)
+  let i = s.lastIndexOf(tag)
+  if (i == -1) return { found: false, before: s, tag: '', after: '' }
+  return {
+    found: true,
+    before: s.slice(0, i),
+    tag: s.slice(i, i + tag.length),
+    after: s.slice(i + tag.length),
+  }
+}
+//find tag1 in s, and then tag2 after it, and cut s around both
+export function cut2(s, tag1, tag2) {
+  let c1 = cut(s, tag1)
+  let c2 = cut(c1.after, tag2)
+  if (c1.found && c2.found)
+    return {
+      found: true,
+      before: c1.before,
+      tag1: c1.tag,
+      middle: c2.before,
+      tag2: c2.tag,
+      after: c2.after,
+    }
+  return { found: false, before: s, tag1: '', middle: '', tag2: '', after: '' } //both must be found
+}
+//what comes after the last tag in s, or throw because s doesn't have the tag at all
+export function cutAfterLast(s, tag) {
+  let c = cutLast(s, tag)
+  if (!c.found) throw new Error(`no ${_quote(tag)} in ${_quote(s)}`) //make sure s is what we expect
+  return c.after
+}
+//a guard: pass a tag to cut at through, or throw because it's blank or not a string; whitespace is fine
+function _checkCutTag(tag) {
+  if (!(hasString(tag) && tag.length > 0))
+    throw new Error(`not a tag to cut at: ${_quote(tag)}`)
+  return tag
+}
+
+//  _                             _   _                       _       _         _ _ _                 _
+// | |_ __ _  __ _  __ _  ___  __| | | |_ ___ _ __ ___  _ __ | | __ _| |_ ___  | (_) |_ ___ _ __ __ _| |___
+// | __/ _` |/ _` |/ _` |/ _ \/ _` | | __/ _ \ '_ ` _ \| '_ \| |/ _` | __/ _ \ | | | __/ _ \ '__/ _` | / __|
+// | || (_| | (_| | (_| |  __/ (_| | | ||  __/ | | | | | |_) | | (_| | ||  __/ | | | ||  __/ | | (_| | \__ \
+//  \__\__,_|\__, |\__, |\___|\__,_|  \__\___|_| |_| |_| .__/|_|\__,_|\__\___| |_|_|\__\___|_|  \__,_|_|___/
+//           |___/ |___/                               |_|
+
+/*
+Two tags for template literals, each written just before the backtick, like deindent`...` and safefill`...`. JavaScript hands a tag the literal's pieces of text and the values of its fields separately, so the tag can reshape or check them before joining them into one string. Called like a plain function, either one throws, since a plain string isn't a template's pieces.
+*/
+
+//be able to indent multiline string literals with code so they don't mess up overall readability!
+export function deindent(words, ...fields) {
+  if (!Array.isArray(words))
+    throw new Error(`deindent is a tag for a template literal: ${words}`) //you probably called this like a function
+
+  let s = words[0] //fill in the blanks like `Name: ${name}` does
+  for (let i = 0; i < fields.length; i++) s += String(fields[i]) + words[i + 1]
+
+  let lines = s
+    .replace(/\r\n|\r|\n/g, '\n') //temporarily normalize newlines to just \n
+    .split('\n') //split into lines
+    .map((line) =>
+      _trimEnd(line.replace(/^[ \t]+/, (match) => match.replace(/\t/g, '  '))),
+    ) //replace tabs at the start with two spaces, and take whitespace off the end
+    .join('\n')
+    .replace(/^\n+|\n+$/g, '') //remove blank lines from the start and end; blank lines in the middle stay
+    .split('\n')
+
+  let indent = 0 //determine how many spaces indent the first line
+  if (lines.length > 0) indent = lines[0].match(/^( *)/)[1].length
+  lines = lines.map((line) => {
+    //remove up to that many spaces from each line
+    let remove = 0
+    while (remove < indent && remove < line.length && line[remove] == ' ')
+      remove++
+    return line.slice(remove)
+  })
+
+  return lines.join('\n') + '\n' //reassemble lines with trailing newlines
+}
+
+//custom tagged template literal function; use like safefill`A message for ${name} about ${thing}`
+//just like the default template literal, with an additional check to require non-blank strings
+//important for being sure you're hashing the text you think you are hashing (you can't tell from looking at the hash value!)
+export function safefill(words, ...fields) {
+  //words is not lines, it's the literal text pieces between the ${} interpolations
+  if (!Array.isArray(words))
+    throw new Error(`safefill is a tag for a template literal: ${words}`) //called like a function, words would be a string, and words[0] its first letter
+
+  for (let field of fields) checkSafeFill(field)
+  let s = words[0] //fill in the blanks to build the string the same way javascript does
+  for (let i = 0; i < fields.length; i++) s += fields[i] + words[i + 1]
+  return checkSafeFill(s) //make sure the finished text also passes, blocks blank template, essentially
+}
+//true if s is text safe to fill into a template and hash: no whitespace at either end, none inside but single spaces, and nothing that's an object or a promise turned into a string; never throws
+export function hasSafeFill(s) {
+  return (
+    hasText(s) && //must be string that is not blank and does not trim to blank, and...
+    trim(s) == s && //must not start or end with whitespace
+    !/(?! )\p{White_Space}| {2}/u.test(s) && //must not have whitespace but single spaces: no tabs, newlines, or double spaces; (?! ) skips the plain space, so \p{White_Space} finds every other kind
+    s != '[object Object]' && //must not look like an object incorrectly turned into a string
+    s != '[object Promise]'
+  )
+}
+//a guard: pass text that's safe to fill through, or throw because it isn't
+export function checkSafeFill(s) {
+  if (!hasSafeFill(s)) throw new Error(`not safe to fill: ${_quote(s)}`)
+  return s
+}
+
 //      _
 //  ___(_)_______
 // / __| |_  / _ \
@@ -331,7 +559,7 @@ export function isoToTick(s) {
     t = Date.UTC(y, mo - 1, d, h, i, sec, ms) //a month is 0 through 11 here, and february 30 rolls into march
   }
   if (!(t >= 0 && t <= lastTick) || tickToIso(t) != s)
-    throw new Error(`not the iso form of a tick: ${JSON.stringify(s)}`) //the round trip is the final check, catching the rolled february 30 and a year under 100 that Date.UTC moved to the 1900s
+    throw new Error(`not the iso form of a tick: ${_quote(s)}`) //the round trip is the final check, catching the rolled february 30 and a year under 100 that Date.UTC moved to the 1900s
   return t
 }
 
@@ -363,7 +591,7 @@ export function tickToText(t) {
 export function textToTick(s) {
   let t = _parseText(s)
   if (t === false || tickToText(t) != s)
-    throw new Error(`not the short form of a tick: ${JSON.stringify(s)}`) //the round trip is the final check, catching february 30 and a padded or deeper text alike
+    throw new Error(`not the short form of a tick: ${_quote(s)}`) //the round trip is the final check, catching february 30 and a padded or deeper text alike
   return t
 }
 //read the short form leniently enough to compute a tick, or false; textToTick above makes it strict with the round trip
@@ -515,7 +743,7 @@ export function hasTag(s) {
 
 //a guard: pass a tag through, or throw because the caller handed us something that isn't one
 export function checkTag(s) {
-  if (!hasTag(s)) throw new Error(`not a tag: ${JSON.stringify(s)}`)
+  if (!hasTag(s)) throw new Error(`not a tag: ${_quote(s)}`)
   return s
 }
 

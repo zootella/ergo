@@ -1,8 +1,10 @@
 # icarus migration
 
-What changes for a project moving from icarus's helpers to ergo's. ergo's functions came from icarus, the JavaScript helpers in the application ergo grew out of, and as each family came over, some of it changed: an answer here, a refusal there, a helper left behind. ergo's comments and documentation describe ergo as it is, so the differences live here, family by family, for checking a project's call sites as it moves. Each claim was checked against icarus's own code, core.js and level0.js, in October 2026, most of them by running it beside ergo's. icarus is JavaScript, so this file uses the JavaScript edition's names.
+This file is for later: the day a project that calls icarus's helpers switches to calling ergo's instead. It isn't about how ergo is built.
 
-Each family's section is written as the family comes over; CLAUDE.md has the flow. Outline and quoted encoding come next, with the text helpers they lean on.
+Two migrations share the word. The first is happening now. ergo is bringing in icarus's helpers, the JavaScript in the application ergo grew out of, family by family, and as each family comes over, some of it changes, since what fits a JavaScript application on the web doesn't always fit a library in four languages: an answer here, a refusal there, a helper left behind. CLAUDE.md's flow describes that work. The second comes later, once a family is in ergo: a project that has been using icarus, the application ergo grew out of among them, replaces its calls to icarus with calls to ergo. Each change the first migration makes is a landmine for the second, so each is recorded here as it's made, family by family, for checking a project's call sites as it moves, while it leans on its own tests.
+
+ergo's comments and documentation describe ergo as it is, and leave the differences to this file. Each claim was checked against icarus's own code, core.js and level0.js, in October 2026, most of them by running it beside ergo's. icarus is JavaScript, so this file uses the JavaScript edition's names. Outline and quoted encoding come over next, and their sections will follow.
 
 ## Everywhere
 
@@ -16,6 +18,22 @@ Each family's section is written as the family comes over; CLAUDE.md has the flo
 - icarus's `checkInt(i, m)` takes a minimum, zero unless given, so `checkInt(-1)` throws there and `checkInt(n, 1)` refuses zero. ergo's `checkInt(i)` has no minimum. It passes any integer every edition holds exactly, negatives included, and ignores a second argument without a word. Where a call meant a count, write `if (!(hasInt(n) && n >= 0)) throw new Error(...)`, with the call's minimum in place of the zero.
 - `minInt(i, m)` becomes `hasInt(i) && i >= m`.
 - ergo's `checkInt` returns `i`, so it can wrap a value in place. icarus's returned nothing.
+
+## text
+
+- `hasTextOrBlank` and `checkTextOrBlank` become `hasString` and `checkString`: any string, blank included.
+- `hasText` and `checkText` keep their meaning, a string with something besides whitespace, but whitespace is now Unicode's White_Space list rather than JavaScript's `trim`. The two differ at two characters. A byte order mark alone, `'\ufeff'`, is text in ergo and wasn't in icarus. The next line control alone, `'\u0085'`, was text in icarus and isn't in ergo.
+- `trim(s)` is new, and differs from `s.trim()` at the same two characters: it keeps a byte order mark, and takes off U+0085.
+- **cut can cut at whitespace.** `cut`, `cutLast`, and `cut2` take any tag of at least one character, so `cut(s, ' ')` and `cut(s, '\n')` work in ergo. icarus refused a space, a tab, or a newline as a tag, since its `checkText` called them blank. A blank tag throws in both.
+- `cutAfterLast` is the same, and its message names the tag and the text.
+- Left behind: `replaceAll` and `replaceOne`, for the platform's own. `replaceOne(s, a, b)` is `s.replace(a, b)` with a string `a`, which is what it called. But `replaceAll(s, a, b)` is `s.split(a).join(b)`, not the platform's `s.replaceAll(a, b)`, which reads `$&`, `$1`, and `$$` in the replacement as patterns, where icarus put the replacement in as written. And icarus's two refused a blank or whitespace tag or replacement, so `replaceAll(s, 'a', '')` threw there, while the platform's take them.
+
+## tagged template literals
+
+- `deindent` is the same, except the whitespace it takes off the end of each line is Unicode's list, so a line ending in U+FEFF keeps it, and one ending in U+0085 loses it.
+- **safefill's rule is stricter.** It refuses whitespace at either end by Unicode's list, and inside it allows nothing but single plain spaces. icarus refused exactly tabs, carriage returns, newlines, and double spaces inside, so a no-break space, a vertical tab, a form feed, or a line separator, U+2028, passed there and is refused here.
+- `safefill` refuses to be called like a function. `safefill('a b')` throws in ergo, where icarus answered `'a'`, the first letter of the string it took for the template's pieces.
+- `checkSafeFill` is public now, beside the new `hasSafeFill`.
 
 ## Size
 

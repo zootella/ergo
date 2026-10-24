@@ -2,6 +2,19 @@ import { test, expect, describe, beforeAll, afterAll } from 'vitest'
 import {
   hasInt,
   checkInt,
+  hasString,
+  checkString,
+  hasText,
+  checkText,
+  trim,
+  cut,
+  cutLast,
+  cut2,
+  cutAfterLast,
+  deindent,
+  safefill,
+  hasSafeFill,
+  checkSafeFill,
   Size,
   saySize4,
   Time,
@@ -86,6 +99,244 @@ describe('int', () => {
     let checked = checkInt(1344230277300) //passes an integer through, or throws because the caller handed it something that isn't one
     // #endregion int
     expect([carried, past, checked]).toEqual([true, false, 1344230277300])
+  })
+})
+
+//  _            _
+// | |_ _____  _| |_
+// | __/ _ \ \/ / __|
+// | ||  __/>  <| |_
+//  \__\___/_/\_\\__|
+//
+
+describe('text', () => {
+  test('asks whether a value is a string, and whether a string is text', () => {
+    expect(hasText('a')).toBe(true)
+    expect(hasText(' a ')).toBe(true) //something besides whitespace, wherever it sits
+    expect(hasText()).toBe(false) //nothing
+    expect(hasText('')).toBe(false) //empty string
+    expect(hasText(' ')).toBe(false) //just spaces
+    expect(hasText(7)).toBe(false) //non-string
+    expect(hasText('\t\r\n')).toBe(false) //nonprinting characters
+
+    expect(hasString()).toBe(false)
+    expect(hasString(5)).toBe(false)
+    expect(hasString('')).toBe(true) //hasString requires a string, but blank is ok
+    expect(hasString(' ')).toBe(true)
+    expect(hasString('a')).toBe(true)
+
+    expect(checkText(' a ')).toBe(' a ') //each check passes its value through
+    expect(checkString('')).toBe('')
+    expect(() => checkText(' ')).toThrow() //hasText and checkText want a string that's not blank and not trimmable to blank
+    expect(() => checkString(5)).toThrow()
+  })
+  test("trims by unicode's list of whitespace, which differs from javascript's own at exactly two characters", () => {
+    expect(trim('  a b  ')).toBe('a b') //off both ends, and never from the middle
+    expect(trim(' \u00a0a\u3000')).toBe('a') //a no-break space and an ideographic space are whitespace too
+    expect(trim('')).toBe('')
+    expect(trim(' \t\n ')).toBe('')
+    expect(() => trim(5)).toThrow()
+
+    expect(trim('a\u0085')).toBe('a') //unicode calls the next line control whitespace, and javascript's trim doesn't
+    expect('a\u0085'.trim()).toBe('a\u0085')
+    expect(trim('\ufeffa')).toBe('\ufeffa') //javascript's trim takes off the byte order mark, which unicode doesn't call whitespace
+    expect('\ufeffa'.trim()).toBe('a')
+    expect(hasText('\ufeff')).toBe(true) //so a byte order mark alone is text
+    expect(hasText('\u0085')).toBe(false) //and a next line control alone isn't
+
+    let differ = [] //every character of the basic plane, where all 25 of unicode's whitespace characters live, trimmed both ways
+    for (let c = 0; c <= 0xffff; c++) {
+      if (c >= 0xd800 && c <= 0xdfff) continue //half of a surrogate pair isn't a character
+      let s = String.fromCharCode(c)
+      if (trim(s) != s.trim()) differ.push(c)
+    }
+    expect(differ).toEqual([0x85, 0xfeff])
+  })
+  test('cuts text around a tag', () => {
+    let s, c
+    s = 'red<a>green<a>blue'
+    c = cut(s, '<a>')
+    expect(c).toEqual({
+      found: true,
+      before: 'red',
+      tag: '<a>',
+      after: 'green<a>blue',
+    })
+    c = cutLast(s, '<a>')
+    expect(c).toEqual({
+      found: true,
+      before: 'red<a>green',
+      tag: '<a>',
+      after: 'blue',
+    })
+    expect(c.before + c.tag + c.after).toBe(s) //we include tag so you can assemble s from given parts
+
+    c = cut(s, '<b>')
+    expect(c).toEqual({ found: false, before: s, tag: '', after: '' })
+    c = cutLast(s, '<b>')
+    expect(c).toEqual({ found: false, before: s, tag: '', after: '' }) //all before so you can move forward in a loop until after is blank
+
+    c = cut2(s, '<a>', '<a>')
+    expect(c).toEqual({
+      found: true,
+      before: 'red',
+      tag1: '<a>',
+      middle: 'green',
+      tag2: '<a>',
+      after: 'blue',
+    })
+    expect(cut2('red<a>green', '<a>', '<b>')).toEqual({
+      found: false,
+      before: 'red<a>green',
+      tag1: '',
+      middle: '',
+      tag2: '',
+      after: '',
+    }) //both must be found
+
+    expect(cutAfterLast('Some_Prefix_ValueValue', '_')).toBe('ValueValue')
+    expect(() => cutAfterLast('NoPrefix', '_')).toThrow() //make sure s is what we expect
+  })
+  test('cuts at any tag of at least one character, whitespace included, and refuses a blank one', () => {
+    expect(cut('first second', ' ')).toEqual({
+      found: true,
+      before: 'first',
+      tag: ' ',
+      after: 'second',
+    }) //a space can be the tag
+    expect(cut('line one\nline two', '\n').after).toBe('line two') //and so can a newline
+    expect(cut('', 'x')).toEqual({
+      found: false,
+      before: '',
+      tag: '',
+      after: '',
+    }) //blank text to search is fine
+
+    expect(() => cut('abc', '')).toThrow() //a blank tag would be found at the start of everything
+    expect(() => cutLast('abc', '')).toThrow()
+    expect(() => cut('abc', 5)).toThrow()
+    expect(() => cut(5, 'a')).toThrow()
+
+    let words = [] //a loop that cuts until nothing is left, which a blank tag would never let end
+    let rest = 'a b c'
+    while (rest) {
+      let c = cut(rest, ' ')
+      words.push(c.before)
+      rest = c.after
+    }
+    expect(words).toEqual(['a', 'b', 'c'])
+  })
+})
+
+//  _                             _   _                       _       _         _ _ _                 _
+// | |_ __ _  __ _  __ _  ___  __| | | |_ ___ _ __ ___  _ __ | | __ _| |_ ___  | (_) |_ ___ _ __ __ _| |___
+// | __/ _` |/ _` |/ _` |/ _ \/ _` | | __/ _ \ '_ ` _ \| '_ \| |/ _` | __/ _ \ | | | __/ _ \ '__/ _` | / __|
+// | || (_| | (_| | (_| |  __/ (_| | | ||  __/ | | | | | |_) | | (_| | ||  __/ | | | ||  __/ | | (_| | \__ \
+//  \__\__,_|\__, |\__, |\___|\__,_|  \__\___|_| |_| |_| .__/|_|\__,_|\__\___| |_|_|\__\___|_|  \__,_|_|___/
+//           |___/ |___/                               |_|
+
+describe('tagged template literals', () => {
+  test('deindent lets a multiline template literal indent with the code around it', () => {
+    let name1 = 'Alice'
+    let name2 = 'Bob'
+    expect(deindent`Hello ${name1} and ${name2}`).toBe('Hello Alice and Bob\n')
+
+    //now you can indent a multiline string with the surrounding code
+    let s1 = deindent`
+      1. Introduction
+      2. Summary of Purpose
+        2a. Detail about Particular Purpose
+      3. Action Plan
+    `
+    //rather than having to do this
+    let s2 = deindent`1. Introduction
+2. Summary of Purpose
+  2a. Detail about Particular Purpose
+3. Action Plan
+`
+    expect(s1).toBe(s2) //and they're the same!
+    expect(s1).toBe(
+      '1. Introduction\n2. Summary of Purpose\n  2a. Detail about Particular Purpose\n3. Action Plan\n',
+    )
+  })
+  test('demonstration of deindent, with the shape of its output in view', () => {
+    let s = deindent`
+      A
+        B
+      C
+    `
+    expect('\n↓\n' + s + '↑').toBe('\n↓\nA\n  B\nC\n↑') //newlines so you can see output between vertical arrows
+  })
+  test('deindent counts a tab as two spaces, takes whitespace off the end of each line, and refuses to be called as a function', () => {
+    expect(deindent`
+\t\tA
+\t\t\tB
+\t\tC
+`).toBe('A\n  B\nC\n') //a tab at the start of a line is two spaces of indent
+    expect(deindent`a\r\nb\rc`).toBe('a\nb\nc\n') //every kind of line ending becomes \n
+    expect(deindent`
+      a \u00a0
+        \u3000
+      b
+    `).toBe('a\n\nb\n') //whitespace by unicode's list leaves the end of each line, and a line of it alone becomes a blank line that stays, here in the middle
+    expect(deindent`${5} and ${null}`).toBe('5 and null\n') //fields fill in the way a template literal fills them
+    expect(() => deindent('a')).toThrow() //you probably called this like a function
+  })
+  test("safefill fills a template, and refuses a field or a result that would hash as something you didn't mean", () => {
+    //first, let's just observe how things can go wrong with js template literals
+    let s = 'hi'
+    let b = '' //blank
+    let i = 19
+    let f = 10 / 3
+    let o = { n: 7 }
+    let a = ['a', 'b']
+    let p = Promise.resolve('done') //born resolved, but to get done you have to await p
+    let u = undefined
+    let n = null
+    expect(
+      `string: ${s} blank: ${b} and int: ${i} are ok for a trail message; float: ${f}, object: ${o}, array: ${a}, promise: ${p}, undefined: ${u}, and null: ${n} would make a mess`,
+    ).toBe(
+      'string: hi blank:  and int: 19 are ok for a trail message; float: 3.3333333333333335, object: [object Object], array: a,b, promise: [object Promise], undefined: undefined, and null: null would make a mess',
+    ) //a call that records a message by its hash, like trailAdd(`Thing ${s} just happened`), assumes s is the correct string; but if it's an object or promise js will just call .toString() on it, and the hash of what it adds can never be found later! so we must guard against this, as it's quite possible and would be difficult to spot!
+
+    //sanity check our custom tagged template literal function
+    expect(safefill`W`).toBe('W') //only word
+    expect(safefill`${'S'}`).toBe('S') //only space
+    let name1 = 'Alice'
+    let name2 = 'Bob'
+    expect(safefill`Hello ${name1} and ${name2}`).toBe('Hello Alice and Bob')
+
+    //watch it throw if you pass it blank or a non string
+    expect(
+      () =>
+        safefill`here ${name2} put in something ${p} that blows up from above`,
+    ).toThrow()
+    expect(() => safefill`here ${b} is blank`).toThrow()
+    expect(() => safefill`here ${o} is an object`).toThrow()
+    expect(() => safefill`here ${i} is a number`).toThrow() //fields must be text, even a number, so the caller writes it out
+    expect(() => safefill``).toThrow() //a blank template
+    expect(() => safefill('a b')).toThrow() //called like a function, it would have filled in only the a
+  })
+  test('safe fill text has no whitespace at its ends, and none inside but single spaces', () => {
+    expect(hasSafeFill('Hello Alice and Bob')).toBe(true)
+    expect(checkSafeFill('Alice')).toBe('Alice')
+    for (let s of [
+      '',
+      ' ',
+      ' Alice', //whitespace at the start
+      'Alice ', //or the end
+      'Alice  Bob', //a double space
+      'Alice\tBob', //a tab
+      'Alice\nBob', //a newline
+      'Alice\u00a0Bob', //a no-break space, or any of unicode's whitespace that isn't a plain space
+      'Alice\u2028Bob', //a line separator
+      '[object Object]', //an object incorrectly turned into a string
+      '[object Promise]',
+      5,
+    ])
+      expect(hasSafeFill(s), JSON.stringify(s)).toBe(false)
+    expect(hasSafeFill('\ufeffAlice')).toBe(true) //a byte order mark isn't whitespace by unicode's list, so it's safe here too, if invisible
+    expect(() => checkSafeFill('Alice  Bob')).toThrow()
   })
 })
 
