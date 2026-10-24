@@ -1936,7 +1936,7 @@ function _outlineCompareHere(o1, o2) {
 /*
 Span: a variable-length integer encoding for size prefixes in the binary format. Each byte contributes 7 bits of value; the high bit is 1 to continue, 0 to stop. Least-significant byte first (little-endian), matching LEB128 (WebAssembly, DWARF debug info) and Protocol Buffers' varint. Capped at 4 bytes (28 bits), giving a maximum value of 268,435,455 — about 256 MB. Outlines are designed to be small packets, not bulk storage, so this ceiling is generous. An Outline that approaches this size is almost certainly a misuse.
 
-The size of an outline's contents is a span too, the root's included, so the cap bounds an outline's whole binary form at about 256 MB: the writer refuses an outline whose bytes would pass it, and no span can tell the reader to expect more.
+The size of an outline's contents is a span too, the root's included, so the cap bounds an outline's whole binary form at about 256 MB: the writer refuses an outline whose bytes would pass it, and no span can tell the reader to expect more. That's still more than a program should take from outside. An outline takes as few as 3 bytes in its binary form and about a hundred in memory, so reading bytes can take some 30 times their size, and in Node, running out of memory ends the process rather than throwing. So a program that reads outlines from the wire caps how many bytes it accepts before it hands them to dataToOutline, the way a server caps the size of a request body.
 */
 //a size as a span, a Data of 1 to 4 bytes, the way an outline's binary form writes each size
 export function spanEncode(n) {
