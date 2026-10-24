@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
@@ -38,6 +39,175 @@ func CheckInt(i int64) int64 {
 		panic(fmt.Sprintf("not an integer: %d", i))
 	}
 	return i
+}
+
+// A string is a type, and text is a string that holds something. HasString asks only about the type: is this a string at all, blank and whitespace included. In Rust and Go every string parameter already is one, so there it always answers true, and it's in all four editions to keep them alike. HasText asks about what's inside: a string with at least one character that isn't whitespace, so "a" and " a " are text, while "", " ", and a tab and a newline aren't.
+//
+// Whitespace means one thing everywhere in ergo: the 25 characters on Unicode's White_Space list, and Trim takes them off both ends of a string. Each platform's own trim keeps a list of its own. JavaScript's differs from Unicode's at exactly two characters of the 1,112,064: it trims the byte order mark, U+FEFF, which Unicode doesn't call whitespace, and keeps the next line control, U+0085, which Unicode does. Python's strip also trims the four separator controls, U+001C through U+001F, and Rust's trim and Go's TrimSpace follow Unicode's list already, so here Trim is Go's own. So ergo uses Unicode's list in every edition, and Trim, HasText, and Deindent agree everywhere about what whitespace is.
+//
+// The two characters are worth knowing by name. Next line is a line break from IBM's mainframes, whose EBCDIC text ends each line with it, and Unicode gave it a place so that text could come over and go back. Nobody types it, and a browser never makes it. Its usual accident is the byte 0x85, the ellipsis in Windows-1252, read as Latin-1 instead, and browsers read anything labeled Latin-1 as Windows-1252. So it turns up only in old data, from a mainframe or from server code that decodes with a true Latin-1. The byte order mark is common. It sits invisibly at the very start of a file to say how the file is encoded, and Excel's CSV export and older Windows tools write one. The web platform drops it whenever it decodes text, in fetch, TextDecoder, and a File's text, but Go's os.ReadFile and a string made from those bytes keep it, and so does a Data, so that bytes and text round-trip exactly. A server that reads an uploaded spreadsheet's bytes and splits its first line finds the mark in front of the first column's name, and Trim leaves it there, as Go's own TrimSpace does. So code that reads files from people should take off a leading byte order mark on purpose.
+
+// HasString reports whether s is a string, which in Go it always is, since the signature already says so. It's here so the four editions match: in JavaScript and Python, where a value can be anything, hasString checks the type at runtime.
+func HasString(s string) bool {
+	return true
+}
+
+// CheckString passes a string through. It never panics, since the signature already guarantees a string; it's here so the four editions match, where in JavaScript and Python checkString is a guard.
+func CheckString(s string) string {
+	return s
+}
+
+// /*************************************************************************/
+// /*                                                                       */
+// /*                                  (`-.                                 */
+// /*                                   \  `                                */
+// /*      /)         ,   '--.           \    `                             */
+// /*     //     , '          \/          \   `   `                         */
+// /*    //    ,'              ./         /\    \>- `   ,----------.        */
+// /*   ( \  ,'    .-.-._        /      ,' /\    \   . `            `.      */
+// /*    \ \'     /.--. .)       ./   ,'  /  \     .      `           `.    */
+// /*     \     -{/    \ .)        / /   / ,' \       `     `-----.     \   */
+// /*     <\      )     ).:)       ./   /,' ,' \        `.  /\)    `.    \  */
+// /*      >^,  //     /..:)       /   //--'    \         `(         )    ) */
+// /*       | ,'/     /. .:)      /   (/         \          \       /    /  */
+// /*       ( |(_    (...::)     (                \       .-.\     /   ,'   */
+// /*       (O| /     \:.::)                      /\    ,'   \)   /  ,'     */
+// /*        \|/      /`.:::)                   ,/  \  /         (  /       */
+// /*                /  /`,.:)                ,'/    )/           \ \       */
+// /*              ,' ,'.'  `:>-._._________,<;'    (/            (,'       */
+// /*            ,'  /  |     `^-^--^--^-^-^-'                              */
+// /*  .--------'   /   |                                                   */
+// /* (       .----'    |   *************************************************/
+// /*  \ <`.  \         |   */
+// /*   \ \ `. \        |   */  Make sure s is a string that has some text,
+// /*    \ \  `.`.      |   */  meaning it's not blank, and not just space
+// /*     \ \   `.`.    |   */
+// /*      \ \    `.`.  |   */
+// /*       \ \     `.`.|   */
+// /*        \ \      `.`.  */
+// /*         \ \     ,^-'  */
+// /*          \ \    |     */
+// /*           `.`.  |     */
+// /*              .`.|     */
+// /*               `._>    */
+// /*                       */
+// /*       g o o d w i n   */
+// /*                       */
+// /*************************/
+
+// HasText reports whether s is text: a string with at least one character that isn't whitespace, so " a " is text and " " isn't. It never panics.
+func HasText(s string) bool {
+	return Trim(s) != ""
+}
+
+// CheckText is a guard: it passes the text through, or panics because the caller handed it a string that's blank or just whitespace, which is a bug in the caller. Ask HasText first about a string from outside.
+func CheckText(s string) string {
+	if !HasText(s) {
+		panic(fmt.Sprintf("not text: %q", s))
+	}
+	return s // pass the text through
+}
+
+// Trim takes whitespace off both ends of s, by Unicode's list. Go's own strings.TrimSpace takes off exactly that list, so this is Go's own, under the name the four editions share.
+func Trim(s string) string {
+	return strings.TrimSpace(s)
+}
+
+// Cut finds a tag in text and cuts the text around it: what's before, the tag itself, and what's after, along with whether it found the tag at all. CutLast does the same from the end, Cut2 finds two tags in order and the middle between them, and CutAfterLast is for text whose shape you already know, answering what comes after the last tag, and panicking when the tag isn't there.
+//
+// A tag is any string of at least one character, whitespace included, so a space, a tab, or a newline can be the tag to cut at. The blank string can't: it would be found at the start of everything, so a loop that cuts until nothing is left would never end.
+
+// CutResult is what Cut and CutLast answer: whether they found the tag, and the text before it, the tag itself, and the text after it, which assemble back into the text.
+type CutResult struct {
+	Found  bool   // whether the tag was there
+	Before string // the text before the tag, or all of it when the tag wasn't found
+	Tag    string // the tag, or blank
+	After  string // the text after the tag, or blank
+}
+
+// Cut2Result is what Cut2 answers: whether it found both tags, and the text before the first, the first tag, the middle between them, the second tag, and the text after it.
+type Cut2Result struct {
+	Found  bool   // whether both tags were there, in order
+	Before string // the text before the first tag, or all of it when they weren't both found
+	Tag1   string // the first tag, or blank
+	Middle string // the text between the two tags, or blank
+	Tag2   string // the second tag, or blank
+	After  string // the text after the second tag, or blank
+}
+
+// Cut finds the first tag in s, and cuts s around it. It panics if tag is blank, which would be found at the start of everything; any tag of at least one character is fine, whitespace included.
+func Cut(s, tag string) CutResult {
+	checkCutTag(tag)
+	before, after, found := strings.Cut(s, tag) // go's own cut, which answers the text on either side
+	if !found {
+		return CutResult{Before: s} // not found, so all of it is before
+	}
+	return CutResult{Found: true, Before: before, Tag: tag, After: after}
+}
+
+// CutLast finds the last tag in s, and cuts s around it. It panics if tag is blank.
+func CutLast(s, tag string) CutResult {
+	checkCutTag(tag)
+	i := strings.LastIndex(s, tag)
+	if i == -1 {
+		return CutResult{Before: s}
+	}
+	return CutResult{Found: true, Before: s[:i], Tag: tag, After: s[i+len(tag):]}
+}
+
+// Cut2 finds tag1 in s, and then tag2 after it, and cuts s around both. It panics if either tag is blank.
+func Cut2(s, tag1, tag2 string) Cut2Result {
+	c1 := Cut(s, tag1)
+	c2 := Cut(c1.After, tag2)
+	if c1.Found && c2.Found {
+		return Cut2Result{Found: true, Before: c1.Before, Tag1: c1.Tag, Middle: c2.Before, Tag2: c2.Tag, After: c2.After}
+	}
+	return Cut2Result{Before: s} // both must be found
+}
+
+// CutAfterLast is what comes after the last tag in s. It panics if s doesn't have the tag at all, since it's for text whose shape the caller already knows, or if tag is blank; ask CutLast(s, tag).Found first about text from outside.
+func CutAfterLast(s, tag string) string {
+	c := CutLast(s, tag)
+	if !c.Found {
+		panic(fmt.Sprintf("no %q in %q", tag, s)) // make sure s is what we expect
+	}
+	return c.After
+}
+
+// checkCutTag is a guard: it panics because a tag to cut at is blank; whitespace is fine
+func checkCutTag(tag string) {
+	if tag == "" {
+		panic(fmt.Sprintf("not a tag to cut at: %q", tag))
+	}
+}
+
+// Deindent lets a multiline string literal be indented with the code around it, so it doesn't mess up overall readability! The indent of the first line comes off every line, deeper lines keep the rest of theirs, blank lines at the start and end go, and the text ends with one newline. In JavaScript it's a tag for a template literal; here it takes the text, like a raw string in backticks.
+func Deindent(s string) string {
+	normal := strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n") // temporarily normalize newlines to just \n
+	lines := strings.Split(normal, "\n")                                          // split into lines
+	for i, line := range lines {
+		lines[i] = strings.TrimRightFunc(tabsToSpaces(line), unicode.IsSpace) // replace tabs at the start with two spaces, and take whitespace off the end
+	}
+	lines = strings.Split(strings.Trim(strings.Join(lines, "\n"), "\n"), "\n") // remove blank lines from the start and end; blank lines in the middle stay
+
+	indent := leadingSpaces(lines[0]) // how many spaces indent the first line
+	var b strings.Builder
+	for _, line := range lines {
+		b.WriteString(line[min(leadingSpaces(line), indent):]) // remove up to that many spaces from each line
+		b.WriteString("\n")                                    // reassemble lines with trailing newlines
+	}
+	return b.String()
+}
+
+// tabsToSpaces replaces each tab among a line's leading spaces and tabs with two spaces
+func tabsToSpaces(line string) string {
+	rest := strings.TrimLeft(line, " \t")
+	return strings.ReplaceAll(line[:len(line)-len(rest)], "\t", "  ") + rest
+}
+
+// leadingSpaces is how many spaces a line starts with
+func leadingSpaces(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " "))
 }
 
 // Numbers of bytes in the binary units that memory and storage are measured in, 1024 to each rather than 1000, so 64*ergo.KB names what a bare 65536 would hide. Untyped, so they multiply an int, an int64, or a uint64 alike.

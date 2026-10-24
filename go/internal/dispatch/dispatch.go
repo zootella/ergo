@@ -22,6 +22,27 @@ func Call(name string, args []any) (result any, err error) {
 		return ergo.HasInt(integer(args, 0)), nil
 	case "checkInt":
 		return ergo.CheckInt(integer(args, 0)), nil
+	case "hasString":
+		return ergo.HasString(text(args, 0)), nil
+	case "checkString":
+		return ergo.CheckString(text(args, 0)), nil
+	case "hasText":
+		return ergo.HasText(text(args, 0)), nil
+	case "checkText":
+		return ergo.CheckText(text(args, 0)), nil
+	case "trim":
+		return ergo.Trim(text(args, 0)), nil
+	case "cut":
+		return cutJSON(ergo.Cut(text(args, 0), text(args, 1))), nil
+	case "cutLast":
+		return cutJSON(ergo.CutLast(text(args, 0), text(args, 1))), nil
+	case "cut2":
+		c := ergo.Cut2(text(args, 0), text(args, 1), text(args, 2))
+		return map[string]any{"found": c.Found, "before": c.Before, "tag1": c.Tag1, "middle": c.Middle, "tag2": c.Tag2, "after": c.After}, nil
+	case "cutAfterLast":
+		return ergo.CutAfterLast(text(args, 0), text(args, 1)), nil
+	case "deindent":
+		return ergo.Deindent(text(args, 0)), nil
 	case "Size.b":
 		return ergo.B, nil
 	case "Size.kb":
@@ -173,6 +194,11 @@ func count(args []any, i int) uint64 {
 		panic(fmt.Sprintf("argument %d must be a count", i))
 	}
 	return uint64(f)
+}
+
+// cutJSON is a cut as the protocol carries it, an object with the field names the JavaScript edition's answer has
+func cutJSON(c ergo.CutResult) map[string]any {
+	return map[string]any{"found": c.Found, "before": c.Before, "tag": c.Tag, "after": c.After}
 }
 
 // integer is argument i as an integer, which may be negative
