@@ -26,6 +26,7 @@ export default defineConfig({
           { text: 'Data', link: '/data' },
           { text: 'Hash', link: '/hash' },
           { text: 'Fuji hashes', link: '/fuji' },
+          { text: 'Outline', link: '/outline' },
         ],
       },
     ],

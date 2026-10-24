@@ -144,6 +144,28 @@ ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f
 True
 
 # endregion fuji
+
+# region outline
+>>> from zootella.ergo import Data, data_to_outline, deindent, text_to_outline
+>>> o = text_to_outline(deindent('''
+...     orchard:
+...       tree:"apple"
+...       basket:
+...         color:"red"  # a comment, which the reader skips
+... '''))  # read from text written by hand, contents in any order
+>>> o.n("tree").value().text()  # n navigates to a name
+'apple'
+>>> o.m("basket").m("count").set_value(Data(text="12"))  # m makes as it navigates, so a chain builds as it goes
+>>> print(o.text(), end="")  # written back sorted, at every level, two spaces an indent
+orchard:
+  basket:
+    color:"red"
+    count:"12"
+  tree:"apple"
+>>> data_to_outline(o.data()).text() == o.text()  # the bytes, the canonical form, read back to the same outline
+True
+
+# endregion outline
 """
 
 import base64

@@ -166,3 +166,31 @@ func ExampleFujiHasher() {
 }
 
 // #endregion fuji
+
+// #region outline
+func ExampleOutline() {
+	o, err := ergo.TextToOutline(ergo.Deindent(`
+		orchard:
+		  tree:"apple"
+		  basket:
+		    color:"red"  # a comment, which the reader skips
+	`)) // read from text written by hand, contents in any order
+	if err != nil {
+		panic(err)
+	}
+	tree, _ := o.N("tree").Value().Text()                      // "apple": N navigates to a name
+	o.M("basket").M("count").SetValue(ergo.DataFromText("12")) // M makes as it navigates, so a chain builds as it goes
+	text := o.Text()                                           // written back sorted, at every level, two spaces an indent
+	back, _ := ergo.DataToOutline(o.Data())                    // the bytes, the canonical form, read back to the same outline
+	fmt.Println(tree, back.Text() == text)
+	fmt.Print(text)
+	// Output:
+	// apple true
+	// orchard:
+	//   basket:
+	//     color:"red"
+	//     count:"12"
+	//   tree:"apple"
+}
+
+// #endregion outline

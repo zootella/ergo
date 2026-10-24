@@ -939,6 +939,27 @@ describe.skipIf(!javascriptChosen)('fuji hashes', () => {
 //
 
 describe.skipIf(!javascriptChosen)('Outline', () => {
+  test('reads an outline from text, navigates it, builds on it, and writes it back as text and as bytes', () => {
+    // #region outline
+    let o = textToOutline(deindent`
+      orchard:
+        tree:"apple"
+        basket:
+          color:"red"  # a comment, which the reader skips
+    `) //read from text written by hand, contents in any order
+    let tree = o.n('tree').value().text() //"apple": n navigates to a name
+    o.m('basket')
+      .m('count')
+      .value(Data({ text: '12' })) //m makes as it navigates, so a chain builds as it goes
+    let text = o.text() //written back sorted, at every level, two spaces an indent
+    let back = dataToOutline(o.data()).text() == text //true: the bytes, the canonical form, read back to the same outline
+    // #endregion outline
+    expect(tree).toBe('apple')
+    expect(text).toBe(
+      'orchard:\n  basket:\n    color:"red"\n    count:"12"\n  tree:"apple"\n',
+    )
+    expect(back).toBe(true)
+  })
   test('main usage: build from a template literal, read through the navigation API, round-trip through text and binary', () => {
     let o = textToOutline(deindent`
       orchard:
