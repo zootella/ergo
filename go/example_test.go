@@ -19,6 +19,21 @@ func ExampleHasInt() {
 
 // #endregion int
 
+// #region text
+func ExampleTrim() {
+	name := ergo.Trim("  Alice  ")  // whitespace off both ends, by Unicode's list in every edition
+	blank := ergo.HasText("   ")    // nothing there but whitespace
+	c := ergo.Cut("key=value", "=") // found, with "key" before the tag and "value" after it
+	note := ergo.Deindent(`
+		line one
+		  line two
+	`) // the first line's indent comes off every line, and a tab at the start of a line is two spaces of it
+	fmt.Printf("%q %v %v %q %q %q\n", name, blank, c.Found, c.Before, c.After, note)
+	// Output: "Alice" false true "key" "value" "line one\n  line two\n"
+}
+
+// #endregion text
+
 // #region size
 func ExampleSaySize4() {
 	buffer := make([]byte, 64*ergo.KB) // a buffer of 64 kibibytes, rather than a bare 65536

@@ -11,6 +11,23 @@ False
 
 # endregion int
 
+# region text
+>>> from zootella.ergo import cut, deindent, has_text, trim
+>>> trim("  Alice  ")  # whitespace off both ends, by unicode's list in every edition
+'Alice'
+>>> has_text("   ")  # nothing there but whitespace
+False
+>>> cut("key=value", "=")
+Cut(found=True, before='key', tag='=', after='value')
+>>> print(deindent('''
+...     line one
+...       line two
+... '''), end="")  # the first line's indent comes off every line
+line one
+  line two
+
+# endregion text
+
 # region size
 >>> from zootella.ergo import Size, say_size4
 >>> buffer = bytearray(64 * Size.KB)  # a buffer of 64 kibibytes, rather than a bare 65536

@@ -123,6 +123,21 @@ describe.skipIf(!javascriptChosen)('int', () => {
 //
 
 describe.skipIf(!javascriptChosen)('text', () => {
+  test('trims text, asks whether it holds anything, cuts it at a tag, and takes the indent off a multiline string', () => {
+    // #region text
+    let name = trim('  Alice  ') //"Alice": whitespace off both ends, by unicode's list in every edition
+    let blank = hasText('   ') //false: nothing there but whitespace
+    let c = cut('key=value', '=') //found, with "key" before the tag and "value" after it
+    let note = deindent`
+      line one
+        line two
+    ` //"line one\n  line two\n": the first line's indent comes off every line
+    // #endregion text
+    expect(name).toBe('Alice')
+    expect(blank).toBe(false)
+    expect(c).toEqual({ found: true, before: 'key', tag: '=', after: 'value' })
+    expect(note).toBe('line one\n  line two\n')
+  })
   test('asks whether a value is a string, and whether a string is text', () => {
     expect(hasText('a')).toBe(true)
     expect(hasText(' a ')).toBe(true) //something besides whitespace, wherever it sits
@@ -1110,6 +1125,22 @@ function randomPieces(data) {
   return pieces
 }
 
+//the characters random text is made of: all 25 of unicode's whitespace characters, the near misses some platform's own trim takes off or that look like whitespace, and a few plain ones, so random text lands on every place the four editions could disagree
+const textPieces = [
+  ...[0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20, 0x85, 0xa0, 0x1680],
+  ...[0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007],
+  ...[0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000], //unicode's whitespace
+  ...[0xfeff, 0x200b, 0x180e, 0x2060, 0x1c, 0x1d, 0x1e, 0x1f], //near misses, none of them on unicode's list
+  ...[0x61, 0x62, 0x3d, 0x301, 0x1f600], //a, b, an equals sign, a combining accent, and an emoji outside the basic plane
+].map((c) => String.fromCodePoint(c))
+//a random text of up to some pieces from textPieces
+function randomText(pieces) {
+  let s = ''
+  for (let i = Math.floor(Math.random() * (pieces + 1)); i > 0; i--)
+    s += textPieces[Math.floor(Math.random() * textPieces.length)]
+  return s
+}
+
 describe.skipIf(!fuzzSeconds)('fuzz', () => {
   test.skipIf(!javascriptChosen)(
     'a random tick round-trips through both text forms in javascript alone, in-process',
@@ -1280,6 +1311,43 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
         }
         console.log(
           `every edition fuzzed ${cycles} random inputs through all three hashes, both forms, in ${fuzzSeconds} seconds, ${Math.round(cycles / fuzzSeconds)} a second`,
+        )
+      },
+      (fuzzSeconds + 60) * Time.second,
+    )
+
+    test(
+      'random text with every kind of whitespace trims, asks, cuts, and deindents the same in every edition',
+      async () => {
+        let stop = Date.now() + fuzzSeconds * Time.second
+        let cycles = 0
+        while (Date.now() < stop) {
+          let s = randomText(12)
+          let tag = randomText(2) || 'a' //a tag of at least one character, which may or may not be in the text
+          let expected = {
+            trim: trim(s),
+            hasText: hasText(s),
+            cut: cut(s, tag),
+            cutLast: cutLast(s, tag),
+            deindent: deindent([s]),
+          } //javascript's answers in-process, which every edition's must match; deindent takes the text as a template's one piece
+          for (let [name, e] of Object.entries(editions)) {
+            let answer = {
+              trim: await e.trim(s),
+              hasText: await e.hasText(s),
+              cut: await e.cut(s, tag),
+              cutLast: await e.cutLast(s, tag),
+              deindent: await e.deindent(s),
+            }
+            expect(
+              answer,
+              `${name} given ${JSON.stringify(s)} and the tag ${JSON.stringify(tag)}`,
+            ).toEqual(expected) //compared as values, since an edition's json can write an object's keys in another order
+          }
+          cycles++
+        }
+        console.log(
+          `every edition fuzzed ${cycles} random texts through trim, hasText, cut, cutLast, and deindent in ${fuzzSeconds} seconds, ${Math.round(cycles / fuzzSeconds)} a second`,
         )
       },
       (fuzzSeconds + 60) * Time.second,

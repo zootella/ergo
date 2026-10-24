@@ -18,6 +18,7 @@ export default defineConfig({
         text: 'Functions',
         items: [
           { text: 'Int', link: '/int' },
+          { text: 'Text', link: '/text' },
           { text: 'Size', link: '/size' },
           { text: 'Time', link: '/time' },
           { text: 'Tick', link: '/tick' },
