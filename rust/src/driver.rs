@@ -11,6 +11,26 @@ fn run(call: &str, args: &[Value]) -> Result<Value, String> {
     match call {
         "hasInt" => Ok(json!(crate::has_int(integer(args, 0)?))),
         "checkInt" => Ok(json!(crate::check_int(integer(args, 0)?))),
+        "hasString" => Ok(json!(crate::has_string(text(args, 0)?))),
+        "checkString" => Ok(json!(crate::check_string(text(args, 0)?))),
+        "hasText" => Ok(json!(crate::has_text(text(args, 0)?))),
+        "checkText" => Ok(json!(crate::check_text(text(args, 0)?))),
+        "trim" => Ok(json!(crate::trim(text(args, 0)?))),
+        "cut" => Ok(cut_json(crate::cut(text(args, 0)?, text(args, 1)?))),
+        "cutLast" => Ok(cut_json(crate::cut_last(text(args, 0)?, text(args, 1)?))),
+        "cut2" => {
+            let c = crate::cut2(text(args, 0)?, text(args, 1)?, text(args, 2)?);
+            Ok(json!({
+                "found": c.found,
+                "before": c.before,
+                "tag1": c.tag1,
+                "middle": c.middle,
+                "tag2": c.tag2,
+                "after": c.after,
+            }))
+        }
+        "cutAfterLast" => Ok(json!(crate::cut_after_last(text(args, 0)?, text(args, 1)?))),
+        "deindent" => Ok(json!(crate::deindent(text(args, 0)?))),
         "Size.b" => Ok(json!(crate::size::B)),
         "Size.kb" => Ok(json!(crate::size::KB)),
         "Size.mb" => Ok(json!(crate::size::MB)),
@@ -142,6 +162,11 @@ fn run(call: &str, args: &[Value]) -> Result<Value, String> {
 /// A reader's own Result as the protocol's: the tick, or the error's message as the refusal.
 fn refused<E: std::fmt::Display>(r: Result<i64, E>) -> Result<Value, String> {
     r.map(|t| json!(t)).map_err(|e| e.to_string())
+}
+
+/// A cut as the protocol carries it, an object with the field names the JavaScript edition's answer has.
+fn cut_json(c: crate::Cut) -> Value {
+    json!({"found": c.found, "before": c.before, "tag": c.tag, "after": c.after})
 }
 
 /// Argument i as a count, zero or more, or an error naming the argument.

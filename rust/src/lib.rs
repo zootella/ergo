@@ -31,6 +31,271 @@ pub fn check_int(i: i64) -> i64 {
     i
 }
 
+// text
+
+// A string is a type, and text is a string that holds something. has_string asks only about the type: is this a string at all, blank and whitespace included. In Rust and Go every string parameter already is one, so there it always answers true, and it's in all four editions to keep them alike. has_text asks about what's inside: a string with at least one character that isn't whitespace, so "a" and " a " are text, while "", " ", and a tab and a newline aren't.
+//
+// Whitespace means one thing everywhere in ergo: the 25 characters on Unicode's White_Space list, and trim takes them off both ends of a string. Each platform's own trim keeps a list of its own. JavaScript's differs from Unicode's at exactly two characters of the 1,112,064: it trims the byte order mark, U+FEFF, which Unicode doesn't call whitespace, and keeps the next line control, U+0085, which Unicode does. Python's strip also trims the four separator controls, U+001C through U+001F, and Rust's trim and Go's TrimSpace follow Unicode's list already, so here trim is Rust's own. So ergo uses Unicode's list in every edition, and trim, has_text, and deindent agree everywhere about what whitespace is.
+//
+// The two characters are worth knowing by name. Next line is a line break from IBM's mainframes, whose EBCDIC text ends each line with it, and Unicode gave it a place so that text could come over and go back. Nobody types it, and a browser never makes it. Its usual accident is the byte 0x85, the ellipsis in Windows-1252, read as Latin-1 instead, and browsers read anything labeled Latin-1 as Windows-1252. So it turns up only in old data, from a mainframe or from server code that decodes with a true Latin-1. The byte order mark is common. It sits invisibly at the very start of a file to say how the file is encoded, and Excel's CSV export and older Windows tools write one. The web platform drops it whenever it decodes text, in fetch, TextDecoder, and a File's text, but Rust's fs::read_to_string and String::from_utf8 keep it, and so does a Data, so that bytes and text round-trip exactly. A server that reads an uploaded spreadsheet's bytes and splits its first line finds the mark in front of the first column's name, and trim leaves it there, as Rust's own trim does. So code that reads files from people should take off a leading byte order mark on purpose.
+
+/// True, since a `&str` is always a string: the type already says so. It's here so the four editions match; in JavaScript and Python, where a value can be anything, `hasString` checks the type at runtime.
+///
+/// ```
+/// assert!(zootella_ergo::has_string(""));
+/// ```
+pub fn has_string(_s: &str) -> bool {
+    true
+}
+
+/// Pass a string through. It never panics, since the type already guarantees a string; it's here so the four editions match, where in JavaScript and Python `checkString` is a guard.
+pub fn check_string(s: &str) -> &str {
+    s
+}
+
+// /*************************************************************************/
+// /*                                                                       */
+// /*                                  (`-.                                 */
+// /*                                   \  `                                */
+// /*      /)         ,   '--.           \    `                             */
+// /*     //     , '          \/          \   `   `                         */
+// /*    //    ,'              ./         /\    \>- `   ,----------.        */
+// /*   ( \  ,'    .-.-._        /      ,' /\    \   . `            `.      */
+// /*    \ \'     /.--. .)       ./   ,'  /  \     .      `           `.    */
+// /*     \     -{/    \ .)        / /   / ,' \       `     `-----.     \   */
+// /*     <\      )     ).:)       ./   /,' ,' \        `.  /\)    `.    \  */
+// /*      >^,  //     /..:)       /   //--'    \         `(         )    ) */
+// /*       | ,'/     /. .:)      /   (/         \          \       /    /  */
+// /*       ( |(_    (...::)     (                \       .-.\     /   ,'   */
+// /*       (O| /     \:.::)                      /\    ,'   \)   /  ,'     */
+// /*        \|/      /`.:::)                   ,/  \  /         (  /       */
+// /*                /  /`,.:)                ,'/    )/           \ \       */
+// /*              ,' ,'.'  `:>-._._________,<;'    (/            (,'       */
+// /*            ,'  /  |     `^-^--^--^-^-^-'                              */
+// /*  .--------'   /   |                                                   */
+// /* (       .----'    |   *************************************************/
+// /*  \ <`.  \         |   */
+// /*   \ \ `. \        |   */  Make sure s is a string that has some text,
+// /*    \ \  `.`.      |   */  meaning it's not blank, and not just space
+// /*     \ \   `.`.    |   */
+// /*      \ \    `.`.  |   */
+// /*       \ \     `.`.|   */
+// /*        \ \      `.`.  */
+// /*         \ \     ,^-'  */
+// /*          \ \    |     */
+// /*           `.`.  |     */
+// /*              .`.|     */
+// /*               `._>    */
+// /*                       */
+// /*       g o o d w i n   */
+// /*                       */
+// /*************************/
+/// True if `s` is text: a string with at least one character that isn't whitespace, so " a " is text and " " isn't. Never panics.
+///
+/// ```
+/// assert!(zootella_ergo::has_text(" a "));
+/// assert!(!zootella_ergo::has_text(" "));
+/// ```
+pub fn has_text(s: &str) -> bool {
+    !trim(s).is_empty()
+}
+
+/// A guard: pass the text through, or panic because the caller handed us a string that's blank or just whitespace.
+///
+/// # Panics
+///
+/// Panics if `s` isn't text, which is a bug in the caller. Ask [`has_text`] first about a string from outside.
+pub fn check_text(s: &str) -> &str {
+    assert!(has_text(s), "not text: {s:?}");
+    s // pass the text through
+}
+
+/// Take whitespace off both ends of `s`, by Unicode's list. Rust's own `str::trim` takes off exactly that list, so this is Rust's own, under the name the four editions share.
+///
+/// ```
+/// assert_eq!(zootella_ergo::trim("  a b  "), "a b");
+/// ```
+pub fn trim(s: &str) -> &str {
+    s.trim()
+}
+
+// cut finds a tag in text and cuts the text around it: what's before, the tag itself, and what's after, along with whether it found the tag at all. cut_last does the same from the end, cut2 finds two tags in order and the middle between them, and cut_after_last is for text whose shape you already know, answering what comes after the last tag, and panicking when the tag isn't there.
+//
+// A tag is any string of at least one character, whitespace included, so a space, a tab, or a newline can be the tag to cut at. The blank string can't: it would be found at the start of everything, so a loop that cuts until nothing is left would never end.
+
+/// What [`cut`] and [`cut_last`] answer: whether they found the tag, and the text before it, the tag itself, and the text after it, which assemble back into the text. Each part borrows from the text, so cutting copies nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cut<'a> {
+    /// Whether the tag was there.
+    pub found: bool,
+    /// The text before the tag, or all of it when the tag wasn't found.
+    pub before: &'a str,
+    /// The tag, as it sat in the text, or blank.
+    pub tag: &'a str,
+    /// The text after the tag, or blank.
+    pub after: &'a str,
+}
+
+/// What [`cut2`] answers: whether it found both tags, and the text before the first, the first tag, the middle between them, the second tag, and the text after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cut2<'a> {
+    /// Whether both tags were there, in order.
+    pub found: bool,
+    /// The text before the first tag, or all of it when they weren't both found.
+    pub before: &'a str,
+    /// The first tag, or blank.
+    pub tag1: &'a str,
+    /// The text between the two tags, or blank.
+    pub middle: &'a str,
+    /// The second tag, or blank.
+    pub tag2: &'a str,
+    /// The text after the second tag, or blank.
+    pub after: &'a str,
+}
+
+/// Find the first tag in `s`, and cut `s` around it.
+///
+/// ```
+/// let c = zootella_ergo::cut("key=value", "=");
+/// assert_eq!((c.found, c.before, c.after), (true, "key", "value"));
+/// ```
+///
+/// # Panics
+///
+/// Panics if `tag` is blank, which would be found at the start of everything. Any tag of at least one character is fine, whitespace included.
+pub fn cut<'a>(s: &'a str, tag: &str) -> Cut<'a> {
+    check_cut_tag(tag);
+    match s.split_once(tag) {
+        // rust's own cut, which answers the text on either side
+        Some((before, after)) => Cut {
+            found: true,
+            before,
+            tag: &s[before.len()..before.len() + tag.len()],
+            after,
+        },
+        None => Cut {
+            found: false,
+            before: s,
+            tag: "",
+            after: "",
+        },
+    }
+}
+
+/// Find the last tag in `s`, and cut `s` around it.
+///
+/// # Panics
+///
+/// Panics if `tag` is blank.
+pub fn cut_last<'a>(s: &'a str, tag: &str) -> Cut<'a> {
+    check_cut_tag(tag);
+    match s.rsplit_once(tag) {
+        Some((before, after)) => Cut {
+            found: true,
+            before,
+            tag: &s[before.len()..before.len() + tag.len()],
+            after,
+        },
+        None => Cut {
+            found: false,
+            before: s,
+            tag: "",
+            after: "",
+        },
+    }
+}
+
+/// Find `tag1` in `s`, and then `tag2` after it, and cut `s` around both.
+///
+/// # Panics
+///
+/// Panics if either tag is blank.
+pub fn cut2<'a>(s: &'a str, tag1: &str, tag2: &str) -> Cut2<'a> {
+    let c1 = cut(s, tag1);
+    let c2 = cut(c1.after, tag2);
+    if c1.found && c2.found {
+        return Cut2 {
+            found: true,
+            before: c1.before,
+            tag1: c1.tag,
+            middle: c2.before,
+            tag2: c2.tag,
+            after: c2.after,
+        };
+    }
+    // both must be found
+    Cut2 {
+        found: false,
+        before: s,
+        tag1: "",
+        middle: "",
+        tag2: "",
+        after: "",
+    }
+}
+
+/// What comes after the last tag in `s`.
+///
+/// # Panics
+///
+/// Panics if `s` doesn't have the tag at all, since this is for text whose shape the caller already knows, or if `tag` is blank. Ask `cut_last(s, tag).found` first about text from outside.
+pub fn cut_after_last<'a>(s: &'a str, tag: &str) -> &'a str {
+    let c = cut_last(s, tag);
+    assert!(c.found, "no {tag:?} in {s:?}"); // make sure s is what we expect
+    c.after
+}
+
+/// A guard: panic because a tag to cut at is blank; whitespace is fine.
+fn check_cut_tag(tag: &str) {
+    assert!(!tag.is_empty(), "not a tag to cut at: {tag:?}");
+}
+
+/// Be able to indent multiline string literals with code so they don't mess up overall readability!
+///
+/// The indent of the first line comes off every line, deeper lines keep the rest of theirs, blank lines at the start and end go, and the text ends with one newline. In JavaScript it's a tag for a template literal; here it takes the text, like a raw string.
+///
+/// ```
+/// let s = zootella_ergo::deindent(
+///     "
+///     A
+///       B
+///     C
+/// ",
+/// );
+/// assert_eq!(s, "A\n  B\nC\n");
+/// ```
+pub fn deindent(s: &str) -> String {
+    // temporarily normalize newlines to just \n, and split into lines there, rather than with str::lines, which takes a carriage return off a line's end but leaves one alone as part of the line
+    let normal = s.replace("\r\n", "\n").replace('\r', "\n");
+    // replace tabs at the start with two spaces, and take whitespace off the end
+    let lines: Vec<String> = normal
+        .split('\n')
+        .map(|line| tabs_to_spaces(line).trim_end().to_string())
+        .collect();
+    // remove blank lines from the start and end; blank lines in the middle stay
+    let joined = lines.join("\n");
+    let lines: Vec<&str> = joined.trim_matches('\n').split('\n').collect();
+
+    let indent = leading_spaces(lines[0]); // how many spaces indent the first line
+    let mut out = String::new();
+    for line in lines {
+        out.push_str(&line[leading_spaces(line).min(indent)..]); // remove up to that many spaces from each line
+        out.push('\n'); // reassemble lines with trailing newlines
+    }
+    out
+}
+
+/// Replace each tab among a line's leading spaces and tabs with two spaces.
+fn tabs_to_spaces(line: &str) -> String {
+    let rest = line.trim_start_matches([' ', '\t']);
+    line[..line.len() - rest.len()].replace('\t', "  ") + rest
+}
+
+/// How many spaces a line starts with.
+fn leading_spaces(line: &str) -> usize {
+    line.len() - line.trim_start_matches(' ').len()
+}
+
 // size
 
 /// Numbers of bytes in the binary units that memory and storage are measured in, 1024 to each rather than 1000, so `64 * size::KB` names what a bare 65536 would hide. Unsigned, like a file's length, because a count of bytes is never negative.
