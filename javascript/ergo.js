@@ -1828,7 +1828,12 @@ export function dataToOutline(d) {
   return root
 }
 
-//walk an outline depth first with a stack of its own, rather than calling itself for each level down, so how deep an outline goes is limited by memory, not by the stack; call enter with each outline as the walk reaches it, and how many levels down it is, and leave with each outline and its depth after all its contents, so code that would run before a recursive call goes in enter, and code that would run after it, in leave; either can be null
+/*
+Every walk through an outline keeps a stack of its own, rather than calling itself for each level down. The writers, sort, and the check for cycles walk with _walk, which calls enter with each outline as it reaches it, and leave once all of that outline's contents are done, so what a recursive function would do before calling itself goes in enter, and what it would do after, in leave. Compare keeps a stack of the pairs it has yet to compare, and the binary reader a stack of the outlines it's still reading, each with where its contents end. The text reader has kept a stack of the outlines above the line it's reading since it was first written.
+
+The other walks were written recursively at first, which reads more simply, and moved to loops when depth came to matter. A walk that calls itself spends a frame of the language's own stack on every level, and that stack is small: a few thousand levels in JavaScript and in Rust, about a thousand in Python. An outline's binary form arrives from the wire, so a few kilobytes of nesting from anyone could run it out. Past that point, JavaScript and Python throw, Go, whose stacks grow to a gigabyte before it gives up, stops with a fatal error, and Rust aborts the whole process, which nothing can catch. A walk with a stack of its own needs only memory, so how deep an outline goes is limited by memory alone, how large its bytes can be by the span's cap, and no nesting from anywhere can crash it. Timed against the recursion they replaced, the loops are no slower.
+*/
+//walk an outline depth first: call enter with each outline as the walk reaches it, and how many levels down it is, and leave with each outline and its depth after all its contents; either can be null
 function _walk(root, enter, leave) {
   let path = [root] //the outlines from the root down to where the walk is
   let next = [0] //and at each level, the index of the next outline to visit in its contents
@@ -1930,6 +1935,8 @@ function _outlineCompareHere(o1, o2) {
 
 /*
 Span: a variable-length integer encoding for size prefixes in the binary format. Each byte contributes 7 bits of value; the high bit is 1 to continue, 0 to stop. Least-significant byte first (little-endian), matching LEB128 (WebAssembly, DWARF debug info) and Protocol Buffers' varint. Capped at 4 bytes (28 bits), giving a maximum value of 268,435,455 — about 256 MB. Outlines are designed to be small packets, not bulk storage, so this ceiling is generous. An Outline that approaches this size is almost certainly a misuse.
+
+The size of an outline's contents is a span too, the root's included, so the cap bounds an outline's whole binary form at about 256 MB: the writer refuses an outline whose bytes would pass it, and no span can tell the reader to expect more.
 */
 //a size as a span, a Data of 1 to 4 bytes, the way an outline's binary form writes each size
 export function spanEncode(n) {
