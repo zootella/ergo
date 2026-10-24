@@ -24,6 +24,13 @@ cd rust && cargo test
 cd go && go test ./...
 ```
 
+The JavaScript suite drives all four editions unless `ERGO_EDITIONS` names some of them. That's how a new family arrives: its vectors are committed first, green against JavaScript alone, and then each other edition is written against them and added to the run. A run leaves out the editions it doesn't name and counts what it skipped, and a name it doesn't know is an error.
+
+```
+cd javascript && ERGO_EDITIONS=javascript pnpm test
+cd javascript && ERGO_EDITIONS=javascript,python pnpm test
+```
+
 The unit suite is deterministic and takes milliseconds. Fuzz tests draw random inputs for a set number of seconds and run only when asked. The JavaScript one also runs every value through all four editions and checks that they agree, which is about uniformity; each edition's own runs at that edition's full speed and prints its count, which is about performance.
 
 ```

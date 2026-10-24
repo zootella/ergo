@@ -45,7 +45,7 @@ import {
   FujiHasher,
 } from './ergo.js'
 import { call } from './driver.js'
-import { startEditions, stopEditions } from './editions.js'
+import { startEditions, stopEditions, chosenEditions } from './editions.js'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -56,6 +56,10 @@ import { fileURLToPath } from 'node:url'
 //  \ V /  __/ (__| || (_) | |  \__ \
 //   \_/ \___|\___|\__\___/|_|  |___/
 //
+
+//the editions this run drives, all four unless ERGO_EDITIONS names some, like ERGO_EDITIONS=javascript pnpm test; the blocks below that test javascript alone, in-process, run only when javascript is one of them
+const chosen = chosenEditions()
+const javascriptChosen = chosen.includes('javascript')
 
 //the shared vectors beside this edition: every case from every json file in tests/
 const vectorsDirectory = join(
@@ -72,7 +76,7 @@ function describeVector(c) {
   return `${c.function}(${c.input.map((a) => JSON.stringify(a)).join(', ')}) ${c.note ?? ''}`
 }
 
-describe('vectors, javascript in-process', () => {
+describe.skipIf(!javascriptChosen)('vectors, javascript in-process', () => {
   for (let c of vectors) {
     test(describeVector(c), async () => {
       if (c.throws) await expect(call(c.function, c.input)).rejects.toThrow()
@@ -88,7 +92,7 @@ describe('vectors, javascript in-process', () => {
 // |___/_/___\___|
 //
 
-describe('int', () => {
+describe.skipIf(!javascriptChosen)('int', () => {
   test('asks whether a number is an integer every edition holds exactly', () => {
     // #region int
     let carried = hasInt(9007199254740991) //true: 2^53 - 1, the largest integer every edition holds exactly
@@ -106,7 +110,7 @@ describe('int', () => {
 //  \__\___/_/\_\\__|
 //
 
-describe('text', () => {
+describe.skipIf(!javascriptChosen)('text', () => {
   test('asks whether a value is a string, and whether a string is text', () => {
     expect(hasText('a')).toBe(true)
     expect(hasText(' a ')).toBe(true) //something besides whitespace, wherever it sits
@@ -271,7 +275,7 @@ describe('text', () => {
   })
 })
 
-describe('Size', () => {
+describe.skipIf(!javascriptChosen)('Size', () => {
   test('names a number of bytes, and says one', () => {
     // #region size
     let buffer = new Uint8Array(64 * Size.kb) //a buffer of 64 kibibytes, rather than a bare 65536
@@ -289,7 +293,7 @@ describe('Size', () => {
 //  \__|_|_| |_| |_|\___|
 //
 
-describe('Time', () => {
+describe.skipIf(!javascriptChosen)('Time', () => {
   test('names a span of milliseconds', () => {
     // #region time
     let deadline = 1700000000000 + 2 * Time.hour //two hours after a tick, which counts milliseconds since 1970
@@ -520,7 +524,7 @@ describe('Time', () => {
 //  \__|_|\___|_|\_\
 //
 
-describe('tick', () => {
+describe.skipIf(!javascriptChosen)('tick', () => {
   test('writes a tick two ways, and reads each back exactly', () => {
     // #region tick
     let t = 1344230277300 //a tick: milliseconds since 1970, the way Date.now() counts; this one is the Curiosity landing
@@ -641,7 +645,7 @@ describe('tick', () => {
 //  \__\__,_|\__, |
 //           |___/
 
-describe('Tag', () => {
+describe.skipIf(!javascriptChosen)('Tag', () => {
   test('makes a tag, and recognizes it', () => {
     // #region tag
     let t = Tag() //a new tag, like "AgKxru95C7jFp5iPuK9O7": 21 letters and numerals from the operating system's random source
@@ -663,7 +667,7 @@ describe('Tag', () => {
 //  \__,_|\__,_|\__\__,_|
 //
 
-describe('Data', () => {
+describe.skipIf(!javascriptChosen)('Data', () => {
   test('holds bytes, and speaks every form they travel in', () => {
     // #region data
     let d = Data({ text: 'hello' }) //bytes, from text
@@ -822,7 +826,7 @@ const hashPairs = [
   ['blake3', blake3, Blake3],
 ]
 
-describe('hash', () => {
+describe.skipIf(!javascriptChosen)('hash', () => {
   test('hashes bytes all at once, and a file a piece at a time', async () => {
     // #region hash
     let d = await sha256(Data({ text: 'hello' })) //all at once, for bytes already in memory: a Data of 32 bytes, out in any form
@@ -862,7 +866,7 @@ describe('hash', () => {
   })
 })
 
-describe('fuji hashes', () => {
+describe.skipIf(!javascriptChosen)('fuji hashes', () => {
   test('hash a file quickly by its tips, and wholly by its pieces', async () => {
     // #region fuji
     let file = new Blob(['hello']) //or a File the user chose, of any size
@@ -934,23 +938,29 @@ describe('editions', () => {
   })
 
   //a fraction of a millisecond, and a boolean, are values only javascript and python can hand over, since rust and go take whole numbers by their types; so these can't be vectors
-  describe('say functions, the editions that take a double', () => {
-    test('drop a fraction of a millisecond, and refuse a boolean', async () => {
-      for (let name of ['javascript', 'python']) {
-        let e = editions[name]
-        expect(await e.sayTick(1344230277300.7, 'ss.ttt'), name).toBe('57.300') //down to the millisecond the moment falls in
-        expect(await e.sayDuration(-1500.9, '#.###s'), name).toBe('-1.500s') //toward zero, so the sign stays with the size
-        expect(await e.sayDuration(-0.5, '#s'), name).toBe('0s') //and a negative that rounds to zero has no sign
-        expect(await e.sayTimeRace(1234.5), name).toBe(`0'01"234`)
-        await expect(e.sayTick(-0.5, 'YYYY'), name).rejects.toThrow() //half a millisecond before 1970 is not a tick
-        await expect(e.sayTick(true, 'YYYY'), name).rejects.toThrow() //a boolean is not a number, though python's bool is an int
-        await expect(e.sayDuration(true, '#s'), name).rejects.toThrow()
-        expect(await e.hasInt(true), name).toBe(false)
-        expect(await e.hasInt(1.5), name).toBe(false) //hasInt stays strict, since it asks about an integer to carry, not one to say
-        await expect(e.saySize4(true), name).rejects.toThrow() //and saySize4 refuses a boolean along with the fraction the vectors pin, since a fraction of a millisecond is a clock's real precision, while a fraction of a byte is a mistake
-      }
-    })
-  })
+  let doubles = ['javascript', 'python'].filter((name) => chosen.includes(name)) //of those two, the ones this run drives
+  describe.skipIf(doubles.length == 0)(
+    'say functions, the editions that take a double',
+    () => {
+      test('drop a fraction of a millisecond, and refuse a boolean', async () => {
+        for (let name of doubles) {
+          let e = editions[name]
+          expect(await e.sayTick(1344230277300.7, 'ss.ttt'), name).toBe(
+            '57.300',
+          ) //down to the millisecond the moment falls in
+          expect(await e.sayDuration(-1500.9, '#.###s'), name).toBe('-1.500s') //toward zero, so the sign stays with the size
+          expect(await e.sayDuration(-0.5, '#s'), name).toBe('0s') //and a negative that rounds to zero has no sign
+          expect(await e.sayTimeRace(1234.5), name).toBe(`0'01"234`)
+          await expect(e.sayTick(-0.5, 'YYYY'), name).rejects.toThrow() //half a millisecond before 1970 is not a tick
+          await expect(e.sayTick(true, 'YYYY'), name).rejects.toThrow() //a boolean is not a number, though python's bool is an int
+          await expect(e.sayDuration(true, '#s'), name).rejects.toThrow()
+          expect(await e.hasInt(true), name).toBe(false)
+          expect(await e.hasInt(1.5), name).toBe(false) //hasInt stays strict, since it asks about an integer to carry, not one to say
+          await expect(e.saySize4(true), name).rejects.toThrow() //and saySize4 refuses a boolean along with the fraction the vectors pin, since a fraction of a millisecond is a clock's real precision, while a fraction of a byte is a mistake
+        }
+      })
+    },
+  )
 
   //the vectors stay within the integer ceiling, so the refusals just past it are scripted; 2^53 is the one integer past the ceiling a double still holds exactly, so every edition reads it the same
   describe('the integer ceiling, every edition', () => {
@@ -1090,7 +1100,7 @@ function randomPieces(data) {
 }
 
 describe.skipIf(!fuzzSeconds)('fuzz', () => {
-  test(
+  test.skipIf(!javascriptChosen)(
     'a random tick round-trips through both text forms in javascript alone, in-process',
     () => {
       let budget = (fuzzSeconds * Time.second) / fuzzCenters.length //milliseconds to spend on each center
@@ -1113,7 +1123,7 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
     (fuzzSeconds + 60) * Time.second,
   )
 
-  test(
+  test.skipIf(!javascriptChosen)(
     'tags come out as fast as the edition can make them, in javascript alone, in-process',
     () => {
       let stop = Date.now() + fuzzSeconds * Time.second
@@ -1130,7 +1140,7 @@ describe.skipIf(!fuzzSeconds)('fuzz', () => {
     (fuzzSeconds + 60) * Time.second,
   )
 
-  test(
+  test.skipIf(!javascriptChosen)(
     'each hash runs as fast as the edition can, in javascript alone, in-process',
     async () => {
       let data = Data({ random: Size.mb }) //one mebibyte of random bytes, hashed again and again

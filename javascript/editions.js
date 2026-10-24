@@ -22,16 +22,32 @@ const commands = {
   go: { command: 'go', args: ['run', './cmd/driver'], cwd: 'go' },
 }
 
-//start every edition and return {javascript, python, rust, go}; each is an object whose functions are ergo's, returning promises
-export async function startEditions() {
-  let editions = {
-    javascript: edition(
+const names = ['javascript', 'python', 'rust', 'go'] //every edition, in the order the suite drives them
+
+//the editions a run drives: all four, or just the ones ERGO_EDITIONS names, like ERGO_EDITIONS=javascript,python, so a family's vectors can be proven against one edition before the others are written
+//a name that isn't an edition throws, so a typo can't quietly turn an edition off
+export function chosenEditions() {
+  let s = process.env.ERGO_EDITIONS
+  if (!s) return names
+  let chosen = s.split(',').map((name) => name.trim())
+  for (let name of chosen)
+    if (!names.includes(name))
+      throw new Error(
+        `ERGO_EDITIONS names ${JSON.stringify(name)}, which isn't one of ${names.join(', ')}`,
+      )
+  return names.filter((name) => chosen.includes(name)) //in the usual order, however they were written
+}
+
+//start the chosen editions and return them, like {javascript, python, rust, go}; each is an object whose functions are ergo's, returning promises
+export async function startEditions(chosen = chosenEditions()) {
+  let editions = {}
+  if (chosen.includes('javascript'))
+    editions.javascript = edition(
       (name, args) => call(name, args),
       () => {},
-    ),
-  }
+    )
   for (let [name, c] of Object.entries(commands))
-    editions[name] = await startDriver(name, c)
+    if (chosen.includes(name)) editions[name] = await startDriver(name, c)
   return editions
 }
 //stop the driver processes
