@@ -271,7 +271,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zootella-ergo"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "getrandom",
