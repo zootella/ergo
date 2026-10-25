@@ -1311,6 +1311,7 @@ describe.skipIf(!javascriptChosen)('Outline', () => {
       while (o.length() > 0) o = o.get(0)
       return o
     }
+    let deep = { depth: 1001 } //past the default depth of 256, which a caller with outlines this deep raises
 
     //two chains the same all the way down but the value at the bottom, added in the wrong order, so putting them in order compares a thousand levels deep
     let o = Outline('x')
@@ -1319,10 +1320,10 @@ describe.skipIf(!javascriptChosen)('Outline', () => {
     let d = o.data()
     let t = o.text()
     expect(bottomOf(o.get(0)).value().base16()).toBe('01') //the writers sorted a copy, and left the outline as it was
-    expect(bottomOf(dataToOutline(d).get(0)).value().base16()).toBe('00') //while the bytes came out in order
-    expect(dataToOutline(d).data().base16()).toBe(d.base16()) //and round-trip
-    expect(dataToOutline(d).text()).toBe(t) //and read to the same text
-    expect(textToOutline(t).data().base16()).toBe(d.base16()) //which reads to the same bytes
+    expect(bottomOf(dataToOutline(d, deep).get(0)).value().base16()).toBe('00') //while the bytes came out in order
+    expect(dataToOutline(d, deep).data().base16()).toBe(d.base16()) //and round-trip
+    expect(dataToOutline(d, deep).text()).toBe(t) //and read to the same text
+    expect(textToOutline(t, deep).data().base16()).toBe(d.base16()) //which reads to the same bytes
     o.sort()
     expect(bottomOf(o.get(0)).value().base16()).toBe('00') //sort in place, too
 
@@ -1333,7 +1334,7 @@ describe.skipIf(!javascriptChosen)('Outline', () => {
     swapped.add(d.clipView(0, header))
     swapped.add(d.clipView(header + half, d.size()))
     swapped.add(d.clipView(header, header + half))
-    expect(() => dataToOutline(swapped.data())).toThrow(/out of order/)
+    expect(() => dataToOutline(swapped.data(), deep)).toThrow(/out of order/)
 
     //and a cycle at the bottom of a chain, which the check finds before anything walks into it
     let top = chain('01')
@@ -1351,7 +1352,7 @@ describe.skipIf(!javascriptChosen)('Outline', () => {
       level = level.m('next')
     }
     expect(shuffledOutline(comb).data().base16()).toBe(comb.data().base16())
-    expect(textToOutline(sloppyText(comb)).data().base16()).toBe(
+    expect(textToOutline(sloppyText(comb), deep).data().base16()).toBe(
       comb.data().base16(),
     )
   })
@@ -1372,7 +1373,7 @@ describe.skipIf(!javascriptChosen)('Outline', () => {
     o.add(chain('01'))
     o.add(chain('00')) //the same all the way down but the value at the bottom, and in the wrong order, so putting them in order compares ten thousand levels deep
     let d = o.data()
-    let back = dataToOutline(d)
+    let back = dataToOutline(d, { depth: 10001 }) //past the default depth of 256, raised for a chain this deep
     expect(back.data().base16()).toBe(d.base16())
     expect(bottomOf(back.get(0)).value().base16()).toBe('00') //the bytes came out in order
     o.sort()

@@ -1,6 +1,6 @@
 //! Outline's own test in this edition, beside the shared vectors: every walk keeps a stack of its own, so an outline goes as deep as memory allows.
 
-use zootella_ergo::{Data, Outline, data_to_outline};
+use zootella_ergo::{Data, Outline, OutlineLimits};
 
 /// Two chains ten thousand levels down write, read back, sort, and compare, and then drop, on a thread with a stack of 128 KB, where a walk that called itself, or an outline that freed its contents by recursion, would overflow and abort the test, in a debug build or a release one.
 #[test]
@@ -37,7 +37,11 @@ fn deep() {
     o.add(chain("01"));
     o.add(chain("00")); // the same all the way down but the value at the bottom, and in the wrong order, so putting them in order compares ten thousand levels deep
     let d = o.data();
-    let back = data_to_outline(&d).expect("the bytes read back");
+    let deep = OutlineLimits {
+        depth: 10_001, // past the default depth of 256, which a caller with outlines this deep raises
+        ..OutlineLimits::default()
+    };
+    let back = deep.data_to_outline(&d).expect("the bytes read back");
     assert_eq!(back.data(), d);
     assert_eq!(bottom_of(back.get(0)), "00"); // the bytes came out in order
     o.sort();

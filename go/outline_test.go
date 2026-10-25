@@ -1,10 +1,21 @@
 package ergo_test
 
 import (
+	"fmt"
 	"testing"
 
 	ergo "github.com/zootella/ergo/go"
 )
+
+// TestOutlineString prints an outline as a short summary, never all of its contents.
+func TestOutlineString(t *testing.T) {
+	o := ergo.NewOutline("x")
+	o.SetValue(ergo.DataFromText("hi"))
+	o.AddName("a")
+	if got := fmt.Sprint(o); got != `Outline{Name: "x", Value: "6869", Length: 1}` {
+		t.Errorf("printed as %s", got)
+	}
+}
 
 // TestOutlineDeep has two chains ten thousand levels down write, read back, sort, and compare. Every walk keeps a stack of its own, so an outline goes as deep as memory allows. Go's own stack grows to a gigabyte, so here, unlike in the other editions, a walk that called itself would pass this too, and the test shows that depth works rather than how.
 func TestOutlineDeep(t *testing.T) {
@@ -33,7 +44,9 @@ func TestOutlineDeep(t *testing.T) {
 	o.Add(chain("01"))
 	o.Add(chain("00")) // the same all the way down but the value at the bottom, and in the wrong order, so putting them in order compares ten thousand levels deep
 	d := o.Data()
-	back, err := ergo.DataToOutline(d)
+	deep := ergo.DefaultOutlineLimits
+	deep.Depth = 10001 // past the default depth of 256, which a caller with outlines this deep raises
+	back, err := deep.DataToOutline(d)
 	if err != nil {
 		t.Fatal(err)
 	}

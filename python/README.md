@@ -9,6 +9,7 @@ uv add zootella-ergo
 ```python
 from zootella.ergo import (
     Data,
+    Outline,
     Size,
     Time,
     say_size4,
@@ -26,6 +27,9 @@ tick_to_text(deadline)  # "2026oct15.2041.7125", a tick's short exact text
 tick_to_iso(deadline)  # "2026-10-15T20:41:07.125Z", the same tick's iso text
 d = Data(text="hello")  # bytes, out as base16, base32, base62, base64, or text
 sha256(d).base32()  # the SHA-256 hash, as a Data; sha1 and blake3 the same
+o = Outline("orchard")  # an outline, a tree of names and values of bytes
+o.m("basket").m("note").set_value(d)  # m makes as it navigates, so a chain builds
+o.text()  # 'orchard:\n  basket:\n    note:"hello"\n', and o.data() as bytes
 ```
 
 Documentation for every function, in all four languages, is at [zootella.com](https://zootella.com). The source and the shared test suite are at [github.com/zootella/ergo](https://github.com/zootella/ergo).

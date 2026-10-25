@@ -176,14 +176,20 @@ func Call(name string, args []any) (result any, err error) {
 		return ergo.CheckOutlineName(text(args, 0)), nil
 	case "Outline":
 		return outlineMethod(args)
+	case "outlineLimits.size":
+		return ergo.DefaultOutlineLimits.Size, nil
+	case "outlineLimits.depth":
+		return ergo.DefaultOutlineLimits.Depth, nil
+	case "outlineLimits.nameSize":
+		return ergo.DefaultOutlineLimits.NameSize, nil
 	case "textToOutline":
-		o, err := ergo.TextToOutline(text(args, 0))
+		o, err := limits(args, 1).TextToOutline(text(args, 0))
 		if err != nil {
 			return nil, err
 		}
 		return outlineJSON(o), nil
 	case "dataToOutline":
-		o, err := ergo.DataToOutline(bytes(args, 0))
+		o, err := limits(args, 1).DataToOutline(bytes(args, 0))
 		if err != nil {
 			return nil, err
 		}
@@ -453,6 +459,32 @@ func outlineJSON(o *ergo.Outline) map[string]any {
 		contents = append(contents, outlineJSON(o.Get(i)))
 	}
 	return map[string]any{"name": o.Name(), "value": base16(o.Value()), "contents": contents}
+}
+
+// limits is argument i as outline limits, like {"size": 64, "nameSize": 8}, any left out keeping their default, as javascript's spread does, or the defaults when there are none
+func limits(args []any, i int) ergo.OutlineLimits {
+	l := ergo.DefaultOutlineLimits
+	if i >= len(args) || args[i] == nil {
+		return l
+	}
+	m, ok := args[i].(map[string]any)
+	if !ok {
+		panic(fmt.Sprintf("argument %d must be limits", i))
+	}
+	for k, v := range m {
+		n := int(integer([]any{v}, 0))
+		switch k {
+		case "size":
+			l.Size = n
+		case "depth":
+			l.Depth = n
+		case "nameSize":
+			l.NameSize = n
+		default:
+			panic(fmt.Sprintf("not an outline limit: %s", k))
+		}
+	}
+	return l
 }
 
 // name is argument i as an outline name, where null or a missing argument is "", the blank name, since this edition has no null

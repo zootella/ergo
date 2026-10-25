@@ -1458,6 +1458,26 @@ func CheckOutlineName(s string) string {
 	return s
 }
 
+// OutlineLimits are the limits a reader holds an outline to. The defaults, [DefaultOutlineLimits], are ceilings far past any outline's intended use, and far below what a system can bear, so reading bytes or text from a peer you don't trust is safe as it comes, and a program with outlines of its own size copies them and changes what it needs, since a field set to zero is a limit of zero.
+type OutlineLimits struct {
+	Size     int // the most bytes a reader takes, of binary, or of text as UTF-8
+	Depth    int // the most levels of contents below the root, which alone is depth 0
+	NameSize int // the most bytes in any one name
+}
+
+// DefaultOutlineLimits are the limits [TextToOutline] and [DataToOutline] hold an outline to: 4 MiB in all, 256 levels below the root, and 2 KiB for any one name.
+var DefaultOutlineLimits = OutlineLimits{Size: 4 * MB, Depth: 256, NameSize: 2 * KB}
+
+// spanCap is 268,435,455, the most a span of 4 bytes can say, and so the most bytes in any one name, value, or contents
+const spanCap = 0x0fffffff
+
+// check panics unless every limit is a count, zero or more, a bug in the caller
+func (l OutlineLimits) check() {
+	if l.Size < 0 || l.Depth < 0 || l.NameSize < 0 {
+		panic(fmt.Sprintf("not outline limits: %+v", l))
+	}
+}
+
 // Outline is a tree of outlines, each with a name, a value, and contents, made with NewOutline and filled with Add, AddName, AddValue, and M; the essay above it in the source says what it's for and how to design one. The zero Outline has no name, no value, and no contents.
 type Outline struct {
 	name     string     // outlines can have names, [a-z0-9] only, or no name at all
@@ -1594,7 +1614,7 @@ func (o *Outline) Clear() {
 
 // Sort sorts the contents at every level into the order the writers use, for when the order an outline holds matters, like reading it with Get; the writers sort a copy of their own, so writing never needs this first. It panics if the outline holds itself, or holds the same outline in two places, a bug in the caller, since an outline is a strict tree.
 func (o *Outline) Sort() {
-	outlineFlat(o) // refuse a cycle or a shared subtree first, as the writers do, since sorting walks the whole tree
+	checkTree(o) // refuse a cycle or a shared subtree first, as the writers do, since sorting walks the whole tree
 	walk(o, nil, func(x *Outline, depth int) {
 		slices.SortStableFunc(x.contents, outlineCompare) // sort from the deepest levels up, since the walk leaves an outline only after all its contents, then sort this level
 	})
@@ -1610,9 +1630,14 @@ func (o *Outline) Data() Data {
 	return outlineToData(o)
 }
 
+// String is a short summary of the outline for printing: its name, its value in base16, and how many outlines it holds, rather than the outlines themselves, so printing one never walks it.
+func (o *Outline) String() string {
+	return fmt.Sprintf("Outline{Name: %q, Value: %q, Length: %d}", o.name, o.value.Base16(), len(o.contents))
+}
+
 // outlineToText expresses an outline as indented lines of text for code, documentation, and diffs
 func outlineToText(o *Outline) string {
-	outlineFlat(o)    // refuse an outline that holds itself, or holds the same outline in two places, before anything walks it
+	checkTree(o)      // refuse an outline that holds itself, or holds the same outline in two places, before anything walks it
 	o = sortedCopy(o) // write a sorted copy, so the text is canonical and the outline the caller has stays as it is
 	var s strings.Builder
 	indents := []string{""} // the indent at each depth, two spaces per level, each made once from the one above it
@@ -1625,8 +1650,17 @@ func outlineToText(o *Outline) string {
 	return s.String()
 }
 
-// TextToOutline parses a text outline into an *Outline, or returns an error because the text isn't one. It reads leniently, for text a person or an agent wrote by hand: any indent, as long as an outline's contents share one, blank lines, # comments at the end of a line or on a line of their own, and contents in any order, which it keeps.
+// TextToOutline parses a text outline into an *Outline, within [DefaultOutlineLimits], or returns an error because the text isn't one. It reads leniently, for text a person or an agent wrote by hand: any indent, as long as an outline's contents share one, blank lines, # comments at the end of a line or on a line of their own, and contents in any order, which it keeps.
 func TextToOutline(s string) (*Outline, error) {
+	return DefaultOutlineLimits.TextToOutline(s)
+}
+
+// TextToOutline parses a text outline into an *Outline, within these limits, or returns an error because the text isn't one. It panics if a limit is negative, a bug in the caller.
+func (l OutlineLimits) TextToOutline(s string) (*Outline, error) {
+	l.check()
+	if len(s) > l.Size {
+		return nil, fmt.Errorf("ergo: a text outline of %d bytes is past the size limit of %d", len(s), l.Size) // before reading any of it; len counts a string's bytes
+	}
 	var lines []string
 	for _, line := range strings.Split(s, "\n") { // split at the line feed alone, rather than at every line ending unicode knows
 		line = strings.TrimSuffix(line, "\r") // accept both \r\n and \n line endings
@@ -1645,11 +1679,14 @@ func TextToOutline(s string) (*Outline, error) {
 		indent int
 	}
 	var parsed []parsedLine
-	for _, l := range lines {
-		indent := len(l) - len(strings.TrimLeft(l, " \t"))
-		c := Cut(l[indent:], ":")
+	for _, line := range lines {
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		c := Cut(line[indent:], ":")
 		if !c.Found {
-			return nil, fmt.Errorf("ergo: no colon in %q", l) // every line must have a colon separating name from quoted value
+			return nil, fmt.Errorf("ergo: no colon in %q", line) // every line must have a colon separating name from quoted value
+		}
+		if len(c.Before) > l.NameSize {
+			return nil, fmt.Errorf("ergo: a name of %d bytes is past the name size limit of %d", len(c.Before), l.NameSize)
 		}
 
 		// find where the value ends: walk forward through c.After tracking quote state, stop at the first whitespace or # outside quotes
@@ -1669,7 +1706,7 @@ func TextToOutline(s string) (*Outline, error) {
 		valuePart := c.After[:valueEnd]
 		tail := strings.TrimLeft(c.After[valueEnd:], " \t")
 		if tail != "" && tail[0] != '#' {
-			return nil, fmt.Errorf("ergo: more after the value in %q", l) // trailing content after the value must be whitespace, or a # comment to end of line, whatever characters it holds
+			return nil, fmt.Errorf("ergo: more after the value in %q", line) // trailing content after the value must be whitespace, or a # comment to end of line, whatever characters it holds
 		}
 
 		if !HasOutlineName(c.Before) {
@@ -1701,6 +1738,9 @@ func TextToOutline(s string) (*Outline, error) {
 		if len(stack) == 0 {
 			return nil, fmt.Errorf("ergo: more than one root in %q", s) // outdented past the root, which means there's a second root or worse
 		}
+		if len(stack) > l.Depth {
+			return nil, fmt.Errorf("ergo: an outline nested past the depth limit of %d", l.Depth) // this line would be as many levels down as it has outlines above it
+		}
 		parent := stack[len(stack)-1]
 		if parent.childIndent == -1 {
 			parent.childIndent = p.indent // first child establishes the indent for this parent's contents
@@ -1710,37 +1750,21 @@ func TextToOutline(s string) (*Outline, error) {
 		parent.o.Add(p.o)
 		stack = append(stack, &entry{p.o, p.indent, -1})
 	}
+	if _, _, ok := outlineMeasure(root); !ok {
+		return nil, fmt.Errorf("ergo: an outline with a name, a value, or contents past the span's cap of %d bytes", spanCap) // refuse an outline the writer couldn't write, which only limits raised past the cap would let through
+	}
 	return root, nil
 }
 
 // outlineToData serializes an outline to binary data for disk or wire
 func outlineToData(o *Outline) Data {
-	outlineFlat(o)    // refuse an outline that holds itself, or holds the same outline in two places, before anything walks it
+	checkTree(o)      // refuse an outline that holds itself, or holds the same outline in two places, before anything walks it
 	o = sortedCopy(o) // sort a copy depth-first before we walk the tree, so the output is deterministic, and the outline the caller has stays as it is
 
-	// first pass: measure the exact size we'll need, so we can allocate one buffer and write into it
-	contentsSizes := map[*Outline]int{} // each outline's contents size, measured on the way out of it, so the second pass looks it up in O(1) instead of recomputing
-	var measured []int                  // at each depth, the bytes measured so far of the contents of the outline at that depth
-	total := 0
-	walk(o, func(x *Outline, depth int) {
-		if depth == len(measured) {
-			measured = append(measured, 0)
-		}
-		measured[depth] = 0
-	}, func(x *Outline, depth int) {
-		nameBytes := len(x.name) // len counts a string's bytes
-		valueBytes := x.value.Size()
-		contentsBytes := measured[depth] // every outline in x's contents has been measured, since the walk leaves x after them
-		contentsSizes[x] = contentsBytes
-		size := len(spanEncode(nameBytes)) + nameBytes + // three (span, bytes) pairs: name, value, contents
-			len(spanEncode(valueBytes)) + valueBytes +
-			len(spanEncode(contentsBytes)) + contentsBytes
-		if depth > 0 {
-			measured[depth-1] += size // count x in the contents of the outline above it
-		} else {
-			total = size
-		}
-	})
+	contentsSizes, total, ok := outlineMeasure(o) // first pass: measure the exact size we'll need, so we can allocate one buffer and write into it
+	if !ok {
+		panic(fmt.Sprintf("an outline with a name, a value, or contents past the span's cap of %d bytes", spanCap))
+	}
 	buffer := make([]byte, 0, total) // second pass: write the bytes in the same order we just measured, into one buffer made the exact size
 
 	walk(o, func(x *Outline, depth int) {
@@ -1753,18 +1777,60 @@ func outlineToData(o *Outline) Data {
 	return DataFromArray(buffer)
 }
 
-// DataToOutline parses bytes into an *Outline, or returns an error because they aren't exactly what [Outline.Data] writes: contents sorted at every level, every span in its shortest form, and nothing after. It's strict, for bytes from the wire, and a program reading from the wire caps how many bytes it accepts first.
-func DataToOutline(d Data) (*Outline, error) {
-	a := d.Array()
-	w := 0 // walker, moves forward through a as we read bytes out of it
+// outlineMeasure measures the bytes an outline's binary form takes, and each outline's contents, or answers false because a name, a value, or contents is past the span's cap, which the writer can't write
+func outlineMeasure(o *Outline) (contentsSizes map[*Outline]int, total int, ok bool) {
+	ok = true
+	contentsSizes = map[*Outline]int{} // each outline's contents size, measured on the way out of it, so the second pass looks it up in O(1) instead of recomputing
+	var measured []int                 // at each depth, the bytes measured so far of the contents of the outline at that depth
+	walk(o, func(x *Outline, depth int) {
+		if depth == len(measured) {
+			measured = append(measured, 0)
+		}
+		measured[depth] = 0
+	}, func(x *Outline, depth int) {
+		nameBytes := len(x.name) // len counts a string's bytes
+		valueBytes := x.value.Size()
+		contentsBytes := measured[depth] // every outline in x's contents has been measured, since the walk leaves x after them
+		if nameBytes > spanCap || valueBytes > spanCap || contentsBytes > spanCap {
+			ok = false
+		}
+		if !ok {
+			return // the outline won't fit, so stop counting, since a span can't say a size past the cap
+		}
+		contentsSizes[x] = contentsBytes
+		size := len(spanEncode(nameBytes)) + nameBytes + // three (span, bytes) pairs: name, value, contents
+			len(spanEncode(valueBytes)) + valueBytes +
+			len(spanEncode(contentsBytes)) + contentsBytes
+		if depth > 0 {
+			measured[depth-1] += size // count x in the contents of the outline above it
+		} else {
+			total = size
+		}
+	})
+	return contentsSizes, total, ok
+}
 
-	// span reads a size prefix, advancing the walker
+// DataToOutline parses bytes into an *Outline, within [DefaultOutlineLimits], or returns an error because they aren't exactly what [Outline.Data] writes: contents sorted at every level, every span in its shortest form, and nothing after. It's strict, for bytes from the wire.
+func DataToOutline(d Data) (*Outline, error) {
+	return DefaultOutlineLimits.DataToOutline(d)
+}
+
+// DataToOutline parses bytes into an *Outline, within these limits, or returns an error because they aren't exactly what [Outline.Data] writes. It panics if a limit is negative, a bug in the caller.
+func (l OutlineLimits) DataToOutline(d Data) (*Outline, error) {
+	l.check()
+	a := d.Array()
+	if len(a) > l.Size {
+		return nil, fmt.Errorf("ergo: an outline of %d bytes is past the size limit of %d", len(a), l.Size) // before reading any of it, so bytes past the limit cost nothing
+	}
+	w := 0 // cursor, moves forward through a as we read bytes out of it
+
+	// span reads a size prefix, advancing the cursor
 	span := func() (int, error) {
 		s, err := spanDecode(a, w)
 		w += s.BytesRead
 		return s.Value, err
 	}
-	// read reads n bytes, advancing the walker
+	// read reads n bytes, advancing the cursor
 	read := func(n int) ([]byte, error) {
 		if w+n > len(a) {
 			return nil, fmt.Errorf("ergo: an outline needs %d bytes at %d of %d", n, w, len(a))
@@ -1782,12 +1848,15 @@ func DataToOutline(d Data) (*Outline, error) {
 	start := func() (*open, error) {
 		o := &Outline{}
 
-		nameSize, err := span()
+		nameBytes, err := span()
 		if err != nil {
 			return nil, err
 		}
-		if nameSize > 0 {
-			b, err := read(nameSize)
+		if nameBytes > l.NameSize {
+			return nil, fmt.Errorf("ergo: a name of %d bytes is past the name size limit of %d", nameBytes, l.NameSize) // before reading the name
+		}
+		if nameBytes > 0 {
+			b, err := read(nameBytes)
 			if err != nil {
 				return nil, err
 			}
@@ -1826,6 +1895,9 @@ func DataToOutline(d Data) (*Outline, error) {
 	for len(stack) > 0 {
 		top := stack[len(stack)-1]
 		if w < top.end {
+			if len(stack) > l.Depth {
+				return nil, fmt.Errorf("ergo: an outline nested past the depth limit of %d", l.Depth) // the next outline would be this many levels down, past the limit
+			}
 			next, err := start() // parse contained outlines until we've consumed exactly contentsSize bytes
 			if err != nil {
 				return nil, err
@@ -1908,8 +1980,8 @@ func sortedCopy(o *Outline) *Outline {
 	return copies[0]
 }
 
-// outlineFlat makes sure no outline appears twice in o's tree, in a cycle or as a shared subtree
-func outlineFlat(o *Outline) {
+// checkTree makes sure no outline appears twice in o's tree, in a cycle or as a shared subtree
+func checkTree(o *Outline) {
 	seen := map[*Outline]bool{}
 	walk(o, func(x *Outline, depth int) {
 		if seen[x] {
@@ -1967,7 +2039,7 @@ func outlineCompareHere(o1, o2 *Outline) int {
 
 // Span: a variable-length integer encoding for size prefixes in the binary format. Each byte contributes 7 bits of value; the high bit is 1 to continue, 0 to stop. Least-significant byte first (little-endian), matching LEB128 (WebAssembly, DWARF debug info) and Protocol Buffers' varint. Capped at 4 bytes (28 bits), giving a maximum value of 268,435,455 — about 256 MB. Outlines are designed to be small packets, not bulk storage, so this ceiling is generous. An Outline that approaches this size is almost certainly a misuse.
 //
-// An outline's name, its value, and its contents each come after a span of their size, the root's included, so the cap holds each of them to about 256 MB: the writer refuses an outline with a name, a value, or contents past it, and no span can tell the reader to expect more, though the root's three together can come to about three times that. That's still more than a program should take from outside. An outline takes as few as 3 bytes in its binary form and about 70 in memory, so reading bytes can take more than 20 times their size, and when Go runs out of memory, it stops with a fatal error, which nothing can recover. So a program that reads outlines from the wire caps how many bytes it accepts before it hands them to DataToOutline, the way a server caps the size of a request body.
+// An outline's name, its value, and its contents each come after a span of their size, the root's included, so the cap holds each of them to about 256 MB: the writer refuses an outline with a name, a value, or contents past it, and no span can tell the reader to expect more, though the root's three together can come to about three times that. That cap is the format's own, and it's more than a program should take from a peer it doesn't trust. An outline takes as few as 3 bytes in its binary form and about 70 in memory, so reading bytes can take more than 20 times their size, and when Go runs out of memory, it stops with a fatal error, which nothing can recover. So both readers hold what they read to limits, the defaults in DefaultOutlineLimits: 4 MiB in all, 256 levels below the root, and 2 KiB for any one name. They're ceilings far past any outline's intended use, and far below what a system can bear, so reading from a peer you don't trust is safe as it comes, and a program whose outlines run larger copies the defaults, raises what it needs, and reads with the copy, like limits.DataToOutline(d). Each limit refuses as early as it can: the size before reading anything, a name at its span before reading it, and depth the moment the reader goes one level past it. Whatever the limits, a reader still refuses an outline its writer couldn't write.
 
 // Span is what SpanDecode reads: the size the span says, and how many bytes the span took, so a reader can move past it.
 type Span struct {
@@ -2036,7 +2108,7 @@ func spanDecode(a []byte, offset int) (Span, error) {
 // «"A"00» shows the bits of a null terminator in a language-agnostic way, unlike 'A\0'
 // «» blank text is valid quoted encoding to express nothing, size zero bytes
 //
-// unlike the base encoding of Data, quoted is *not* round-trip!
+// unlike the base encodings of Data, quoted is *not* one to one! bytes come back from their quoted text, but many texts read to the same bytes
 // a heuristic below balances brevity and readability when choosing which ASCII bytes to expose in quotes
 
 // quotable is true if the given character c is understandable to read in quotes: space through tilde, but not the double quotation mark itself, which is our delimiter!

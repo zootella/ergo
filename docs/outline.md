@@ -31,6 +31,15 @@ The binary form is strict. Each outline is its name, its value, and its contents
 
 `dataToQuoted` and `quotedToData` are quoted encoding on its own, and `spanEncode` and `spanDecode` the span. A name from outside is asked about with `hasOutlineName` before it's handed over, and `checkOutlineName` enforces it. A reader that refuses fails the way its language refuses text: an Error in JavaScript, a ValueError in Python, an `OutlineError` in Rust, or a `DataError` from `quoted_to_data`, and an `error` in Go.
 
-Every walk through an outline keeps a stack of its own rather than calling itself for each level down, so an outline goes as deep as memory allows, and no nesting, however deep, can run a language's stack out. Its size is bounded by the span: an outline's name, its value, and its contents are each at most 268,435,455 bytes, about 256 MB, and the writer refuses an outline with one past that. Outlines are meant to be small, well under 8 KB as binary. An outline in memory takes some 20 to 40 times the bytes of its binary form, depending on the language, so a program that reads outlines from the wire caps how many bytes it accepts before it hands them to `dataToOutline`, the way a server caps the size of a request body.
+Every walk through an outline keeps a stack of its own rather than calling itself for each level down, so no nesting, however deep, can run a language's stack out. The format bounds an outline by its spans: its name, its value, and its contents are each at most 268,435,455 bytes, about 256 MB, and the writer refuses an outline with one past that.
+
+Outlines are meant to be small, well under 8 KB as binary, and one in memory takes some 20 to 40 times the bytes of its binary form, depending on the language. So both readers hold what they read to limits, safe as they come for reading from a peer you don't trust: 4 MiB in all, of binary or of text as UTF-8, 256 levels below the root, and 2 KiB for any one name. The defaults are ceilings far past any outline's intended use, and far below what a system can bear. A program whose outlines run larger passes limits of its own, and any limit it leaves out keeps its default. Each limit refuses as early as it can: the size before reading anything, a name at its span before reading it, and depth the moment the reader goes one level past it. Whatever the limits, a reader still refuses an outline its writer couldn't write.
+
+| | JavaScript | Python | Rust | Go |
+|---|---|---|---|---|
+| the defaults | `outlineLimits` | `OUTLINE_LIMITS` | `OutlineLimits::default()` | `DefaultOutlineLimits` |
+| reading within others | `dataToOutline(d, {size: 64 * Size.mb})` | `data_to_outline(d, OutlineLimits(size=64 * Size.MB))` | `OutlineLimits { size, ..OutlineLimits::default() }.data_to_outline(&d)?` | a copy of `DefaultOutlineLimits` with `Size` raised, then `limits.DataToOutline(d)` |
+
+`textToOutline` takes limits the same way.
 
 Each example above is real code from its edition, verified by that edition's own tests: a vitest demonstration, a Python doctest, a Rust example that cargo compiles, and a Go example that `go test` runs.

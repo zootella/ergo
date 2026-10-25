@@ -1719,6 +1719,32 @@ def check_outline_name(s: str) -> str:
 _NO_VALUE = Data(array=b"")
 
 
+class OutlineLimits(NamedTuple):
+    """The limits a reader holds an outline to, any a caller leaves out taking its default: ceilings far past any outline's intended use, and far below what a system can bear, so a reader taking bytes or text from a peer it doesn't trust is safe as it comes, and a caller with outlines of its own size sets its own, like OutlineLimits(size=64 * Size.MB)."""
+
+    # the most bytes a reader takes, of binary, or of text as UTF-8, 4 MiB
+    size: int = 4 * Size.MB
+    # the most levels of contents below the root, which alone is depth 0
+    depth: int = 256
+    # the most bytes in any one name, 2 KiB
+    name_size: int = 2 * Size.KB
+
+
+# the limits the readers hold an outline to unless a caller passes others
+OUTLINE_LIMITS = OutlineLimits()
+# 268,435,455, the most a span of 4 bytes can say, and so the most bytes in any one name, value, or contents
+_SPAN_CAP = 0x0FFFFFFF
+
+
+def _check_outline_limits(limits: object) -> OutlineLimits:
+    """A guard: pass limits through, or raise because they aren't an OutlineLimits of counts."""
+    if not isinstance(limits, OutlineLimits):
+        raise TypeError(f"expected OutlineLimits: {limits!r}")
+    for n in limits:
+        _check_count(n)
+    return limits
+
+
 class Outline:
     """An outline: a name, a value, and contents, which are other outlines, made with an optional name and value and filled with add and m; the essay above it in the source says what it's for and how to design one."""
 
@@ -1839,13 +1865,17 @@ class Outline:
     def sort(self) -> None:
         """Sort the contents at every level into the order the writers use, for when the order an outline holds matters, like reading it with get; the writers sort a copy of their own, so writing never needs this first. Raises ValueError if the outline holds itself, or holds the same outline in two places."""
         # refuse a cycle or a shared subtree first, as the writers do, since sorting walks the whole tree
-        _outline_flat(self)
+        _check_tree(self)
 
         def leave(x: Outline, depth: int) -> None:
             """Sort from the deepest levels up, since the walk leaves an outline only after all its contents, then sort this level."""
             x._contents.sort(key=_outline_order)
 
         _walk(self, None, leave)
+
+    def __repr__(self) -> str:
+        """A short summary for printing: the name, the value, and how many outlines this one holds, rather than the outlines themselves, so printing one never walks it."""
+        return f"Outline(name={self._name!r}, value={self._value!r}, length={len(self._contents)})"
 
     def text(self) -> str:
         """The outline as indented lines of text, its text serialization, visible in source and documentation, sorted at every level from a copy, so this outline stays as it is; raises ValueError like sort."""
@@ -1869,7 +1899,7 @@ def _blank_or_name(k: str | None) -> str:
 def _outline_to_text(o: Outline) -> str:
     """Express an outline as indented lines of text for code, documentation, and diffs."""
     # refuse an outline that holds itself, or holds the same outline in two places, before anything walks it
-    _outline_flat(o)
+    _check_tree(o)
     # write a sorted copy, so the text is canonical and the outline the caller has stays as it is
     o = _sorted_copy(o)
     lines = []
@@ -1886,9 +1916,13 @@ def _outline_to_text(o: Outline) -> str:
     return "".join(lines)
 
 
-def text_to_outline(s: str) -> Outline:
-    """Parse a text outline into an Outline, or raise ValueError because the text isn't one. It reads leniently, for text a person or an agent wrote by hand: any indent, as long as an outline's contents share one, blank lines, # comments at the end of a line or on a line of their own, and contents in any order, which it keeps."""
+def text_to_outline(s: str, limits: OutlineLimits = OUTLINE_LIMITS) -> Outline:
+    """Parse a text outline into an Outline, within limits, or raise ValueError because the text isn't one. It reads leniently, for text a person or an agent wrote by hand: any indent, as long as an outline's contents share one, blank lines, # comments at the end of a line or on a line of their own, and contents in any order, which it keeps."""
     check_string(s)
+    size, depth, name_size = _check_outline_limits(limits)
+    # before reading any of it: a character is at least a byte, so text with more characters than the limit is past it already, and otherwise its bytes as UTF-8 are counted, where a lone surrogate counts the three bytes UTF-8 writes in its place
+    if len(s) > size or len(s.encode("utf-8", "surrogatepass")) > size:
+        raise ValueError(f"a text outline past the size limit of {size} bytes")
     # accept both \r\n and \n line endings, splitting at the line feed alone rather than with splitlines, which would also break at the other line endings unicode knows
     lines = [line.removesuffix("\r") for line in s.split("\n")]
     # skip blank lines, and lines that are only a comment, at any indent
@@ -1907,6 +1941,11 @@ def text_to_outline(s: str) -> Outline:
         if not c.found:
             # every line must have a colon separating name from quoted value
             raise ValueError(f"no colon in {line!r}")
+        # a name is a-z and 0-9, so its length is its bytes, and a longer name of anything else is refused anyway
+        if len(c.before) > name_size:
+            raise ValueError(
+                f"a name of {len(c.before)} bytes is past the name size limit of {name_size}"
+            )
 
         # find where the value ends: walk forward through c.after tracking quote state, stop at the first whitespace or # outside quotes
         value_end = len(c.after)
@@ -1944,6 +1983,9 @@ def text_to_outline(s: str) -> Outline:
         if not stack:
             # outdented past the root, which means there's a second root or worse
             raise ValueError(f"more than one root in {s!r}")
+        if len(stack) > depth:
+            # this line would be as many levels down as it has outlines above it
+            raise ValueError(f"an outline nested past the depth limit of {depth}")
         parent = stack[-1]
         if parent["child_indent"] is None:
             # first child establishes the indent for this parent's contents
@@ -1953,17 +1995,47 @@ def text_to_outline(s: str) -> Outline:
             raise ValueError(f"uneven indent in {s!r}")
         parent["o"].add(o)
         stack.append({"o": o, "indent": indent, "child_indent": None})
+    # refuse an outline the writer couldn't write, with a name, a value, or contents past the span's cap, which only limits raised past it would let through
+    _outline_measure(root)
     return root
 
 
 def _outline_to_data(o: Outline) -> Data:
     """Serialize an outline to binary data for disk or wire."""
     # refuse an outline that holds itself, or holds the same outline in two places, before anything walks it
-    _outline_flat(o)
+    _check_tree(o)
     # sort a copy depth-first before we walk the tree, so the output is deterministic, and the outline the caller has stays as it is
     o = _sorted_copy(o)
 
     # first pass: measure the exact size we'll need, so we can allocate one buffer and write into it
+    contents_sizes, total = _outline_measure(o)
+    buffer = bytearray(total)
+    w = 0  # cursor, moves forward through buffer as we write bytes into it
+
+    # second pass: write the bytes in the same order we just measured
+    def write(b: bytes) -> None:
+        """Write bytes into the buffer, advancing the cursor."""
+        nonlocal w
+        buffer[w : w + len(b)] = b
+        w += len(b)
+
+    def compose(x: Outline, depth: int) -> None:
+        """Write x's name, value, and contents span as the walk reaches it, so its contents follow."""
+        name = x.name().encode()
+        value = x.value().array()
+        write(_span_encode(len(name)))  # name span and bytes
+        write(name)
+        write(_span_encode(len(value)))  # value span and bytes
+        write(value)
+        # contents span, then each contained outline, which the walk reaches next
+        write(_span_encode(contents_sizes[id(x)]))
+
+    _walk(o, compose, None)
+    return Data(array=bytes(buffer))
+
+
+def _outline_measure(o: Outline) -> tuple[dict, int]:
+    """Measure the bytes an outline's binary form takes, and each outline's contents, or raise because a name, a value, or contents is past the span's cap, which the writer can't write."""
     # each outline's contents size, measured on the way out of it, so the second pass looks it up in O(1) instead of recomputing
     contents_sizes = {}
     # at each depth, the bytes measured so far of the contents of the outline at that depth
@@ -1984,6 +2056,10 @@ def _outline_to_data(o: Outline) -> Data:
         value_bytes = x.value().size()
         # every outline in x's contents has been measured, since the walk leaves x after them
         contents_bytes = measured[depth]
+        if max(name_bytes, value_bytes, contents_bytes) > _SPAN_CAP:
+            raise ValueError(
+                f"an outline with a name, a value, or contents past the span's cap of {_SPAN_CAP} bytes"
+            )
         contents_sizes[id(x)] = contents_bytes
         # three (span, bytes) pairs: name, value, contents
         size = (
@@ -2001,45 +2077,29 @@ def _outline_to_data(o: Outline) -> Data:
             total = size
 
     _walk(o, enter, leave)
-    buffer = bytearray(total)
-    w = 0  # walker, moves forward through buffer as we write bytes into it
-
-    # second pass: write the bytes in the same order we just measured
-    def write(b: bytes) -> None:
-        """Write bytes into the buffer, advancing the walker."""
-        nonlocal w
-        buffer[w : w + len(b)] = b
-        w += len(b)
-
-    def compose(x: Outline, depth: int) -> None:
-        """Write x's name, value, and contents span as the walk reaches it, so its contents follow."""
-        name = x.name().encode()
-        value = x.value().array()
-        write(_span_encode(len(name)))  # name span and bytes
-        write(name)
-        write(_span_encode(len(value)))  # value span and bytes
-        write(value)
-        # contents span, then each contained outline, which the walk reaches next
-        write(_span_encode(contents_sizes[id(x)]))
-
-    _walk(o, compose, None)
-    return Data(array=bytes(buffer))
+    return contents_sizes, total
 
 
-def data_to_outline(d: Data) -> Outline:
-    """Parse bytes into an Outline, or raise ValueError because they aren't exactly what Outline.data writes: contents sorted at every level, every span in its shortest form, and nothing after. It's strict, for bytes from the wire, and a program reading from the wire caps how many bytes it accepts first."""
+def data_to_outline(d: Data, limits: OutlineLimits = OUTLINE_LIMITS) -> Outline:
+    """Parse bytes into an Outline, within limits, or raise ValueError because they aren't exactly what Outline.data writes: contents sorted at every level, every span in its shortest form, and nothing after. It's strict, for bytes from the wire."""
     a = _check_data(d).array()
-    w = 0  # walker, moves forward through a as we read bytes out of it
+    size, depth, name_size = _check_outline_limits(limits)
+    if len(a) > size:
+        # before reading any of it, so bytes past the limit cost nothing
+        raise ValueError(
+            f"an outline of {len(a)} bytes is past the size limit of {size}"
+        )
+    w = 0  # cursor, moves forward through a as we read bytes out of it
 
     def span() -> int:
-        """Read a size prefix, advancing the walker."""
+        """Read a size prefix, advancing the cursor."""
         nonlocal w
         value, bytes_read = _span_decode(a, w)
         w += bytes_read
         return value
 
     def read(n: int) -> bytes:
-        """Read n bytes, advancing the walker."""
+        """Read n bytes, advancing the cursor."""
         nonlocal w
         if w + n > len(a):
             raise ValueError(f"an outline needs {n} bytes at {w} of {len(a)}")
@@ -2051,10 +2111,15 @@ def data_to_outline(d: Data) -> Outline:
         """Start parsing one outline: name span + bytes, value span + bytes, then the contents span, which says where its contents end."""
         o = Outline()
 
-        name_size = span()
-        if name_size > 0:
+        name_bytes = span()
+        if name_bytes > name_size:
+            # before reading the name
+            raise ValueError(
+                f"a name of {name_bytes} bytes is past the name size limit of {name_size}"
+            )
+        if name_bytes > 0:
             # a name's bytes are its text, which the setter checks is a-z and 0-9
-            o.set_name(Data(array=read(name_size)).text())
+            o.set_name(Data(array=read(name_bytes)).text())
 
         value_size = span()
         if value_size > 0:
@@ -2071,6 +2136,9 @@ def data_to_outline(d: Data) -> Outline:
     while open_outlines:
         top = open_outlines[-1]
         if w < top["end"]:
+            if len(open_outlines) > depth:
+                # the next outline would be this many levels down, past the limit
+                raise ValueError(f"an outline nested past the depth limit of {depth}")
             # parse contained outlines until we've consumed exactly contents_size bytes
             open_outlines.append(start())
             continue
@@ -2155,7 +2223,7 @@ def _sorted_copy(o: Outline) -> Outline:
     return copies[0]
 
 
-def _outline_flat(o: Outline) -> None:
+def _check_tree(o: Outline) -> None:
     """Make sure no outline appears twice in o's tree, in a cycle or as a shared subtree."""
     seen = set()
 
@@ -2232,7 +2300,7 @@ _outline_order = functools.cmp_to_key(_outline_compare)
 
 # Span: a variable-length integer encoding for size prefixes in the binary format. Each byte contributes 7 bits of value; the high bit is 1 to continue, 0 to stop. Least-significant byte first (little-endian), matching LEB128 (WebAssembly, DWARF debug info) and Protocol Buffers' varint. Capped at 4 bytes (28 bits), giving a maximum value of 268,435,455 — about 256 MB. Outlines are designed to be small packets, not bulk storage, so this ceiling is generous. An Outline that approaches this size is almost certainly a misuse.
 #
-# An outline's name, its value, and its contents each come after a span of their size, the root's included, so the cap holds each of them to about 256 MB: the writer refuses an outline with a name, a value, or contents past it, and no span can tell the reader to expect more, though the root's three together can come to about three times that. That's still more than a program should take from outside. An outline takes as few as 3 bytes in its binary form and about 120 in memory, so reading bytes can take some 40 times their size, and running out of memory can end the process before Python gets the chance to raise a MemoryError. So a program that reads outlines from the wire caps how many bytes it accepts before it hands them to data_to_outline, the way a server caps the size of a request body.
+# An outline's name, its value, and its contents each come after a span of their size, the root's included, so the cap holds each of them to about 256 MB: the writer refuses an outline with a name, a value, or contents past it, and no span can tell the reader to expect more, though the root's three together can come to about three times that. That cap is the format's own, and it's more than a program should take from a peer it doesn't trust. An outline takes as few as 3 bytes in its binary form and about 120 in memory, so reading bytes can take some 40 times their size, and running out of memory can end the process before Python gets the chance to raise a MemoryError. So both readers hold what they read to limits, the defaults in OUTLINE_LIMITS: 4 MiB in all, 256 levels below the root, and 2 KiB for any one name. They're ceilings far past any outline's intended use, and far below what a system can bear, so reading from a peer you don't trust is safe as it comes, and a program whose outlines run larger passes limits of its own, like data_to_outline(d, OutlineLimits(size=64 * Size.MB)). Each limit refuses as early as it can: the size before reading anything, a name at its span before reading it, and depth the moment the reader goes one level past it. Whatever the limits, a reader still refuses an outline its writer couldn't write.
 
 
 class Span(NamedTuple):
@@ -2302,7 +2370,7 @@ def _span_decode(a: bytes, offset: int) -> Span:
 # «"A"00» shows the bits of a null terminator in a language-agnostic way, unlike 'A\0'
 # «» blank text is valid quoted encoding to express nothing, size zero bytes
 #
-# unlike the base encoding of Data, quoted is *not* round-trip!
+# unlike the base encodings of Data, quoted is *not* one to one! bytes come back from their quoted text, but many texts read to the same bytes
 # a heuristic below balances brevity and readability when choosing which ASCII bytes to expose in quotes
 
 

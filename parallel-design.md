@@ -38,17 +38,15 @@ JavaScript throws plain Errors, so a caller who wants to branch reads the messag
 
 Every edition's messages name the refused value, and each writes it in its own escapes: `JSON.stringify` in JavaScript, `repr` in Python, `{:?}` in Rust, and `%q` in Go. The vectors don't pin messages, so they're free to change, edition by edition.
 
+A refusal quotes its input whole, on purpose. Outlines and Data's encodings are small, and when one fails, all of it is the most useful thing a message can show. Quoting costs one more copy of bytes the program already holds, which can't amplify the way building an outline does, and Outline's limits bound it, 4 MiB by default. A refusal of a limit names the limit and quotes nothing. How much of a refusal to keep in a log is the caller's choice, as with any input from outside.
+
 The text outline reader's messages show the whole input, like `uneven indent in "a:\n  b:\n c:\n"`, and never which line. A reviewer measured a message of 62,929 bytes for a 2,001-line file. That's the open question named LineError: report the line number and that one line instead, like `line 3: uneven indent in " c:"`. The case against changing it is that outlines are meant to be small, so the whole input is small too. The case for it is the hand-edited text the reader is lenient for. The person who wrote the outline is the one reading the message, and a line number takes them straight there. Quoting the whole input also writes all of it into a log, which matters when the text came from outside.
-
-### The has promise
-
-quad-style.md promises that `has` asks and never fails, in all four languages. Outline's method named `has` breaks that: `o.has('Key')` throws for a name an outline can't have, on purpose, so a typo is loud. That's the open question named HasThrow. If `has` answers false instead, the promise holds for every function and method spelled `has`. That would also be true, since no outline can hold that name. `n`, `m`, `list`, and `remove` would keep refusing loudly.
 
 ### Panics a caller can't avoid
 
-The rule is that a panic means a bug, and ergo never leaves a caller unable to avoid one. Two places in Rust and Go test it:
+The rule is that a panic means a bug, and ergo never leaves a caller unable to avoid one. Two places in Rust and Go come close to it:
 
-- **CapPanic.** Outline's writer panics when a name, a value, or contents would pass the span's cap of about 256 MB. No `has` asks first, and the cap isn't exported. The text reader can hand back an outline that size, so a program that reads text from outside and writes it as bytes can panic. That's the one path where input from outside reaches the panic.
+- **Outline's writer** panics when a name, a value, or contents would pass the span's cap of about 256 MB, and that's fine too. No reader answers an outline like that, whatever limits it's handed, since the text reader measures what it read and refuses what its writer couldn't write. So input from outside can't reach the panic; only an outline a program builds that big can, which the essay calls a misuse.
 - **Bin's `add`** panics when the bytes won't fit, and that's fine, since the capacity is the caller's own prediction, and `size` and `capacity` ask first.
 
 ## Iterators

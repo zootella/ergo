@@ -1505,6 +1505,21 @@ export function checkOutlineName(s) {
     throw new Error(`not an outline name: ${JSON.stringify(s)}`)
   return s
 }
+//the limits a reader holds an outline to unless a caller passes others: ceilings far past any outline's intended use, and far below what a system can bear, so a reader taking bytes or text from a peer it doesn't trust is safe as it comes, and a caller with a use of its own sets its own
+export const outlineLimits = /*#__PURE__*/ Object.freeze({
+  size: 4194304, //4 * Size.mb, the most bytes a reader takes, of binary, or of text as UTF-8
+  depth: 256, //the most levels of contents below the root, which alone is depth 0
+  nameSize: 2048, //2 * Size.kb, the most bytes in any one name
+})
+//the limits a reader is handed, each one the caller left out taken from outlineLimits, and each checked to be a count
+function _outlineLimitsFrom(limits) {
+  let l = { ...outlineLimits, ...limits }
+  _checkCount(l.size)
+  _checkCount(l.depth)
+  _checkCount(l.nameSize)
+  return l
+}
+const _spanCap = 0x0fffffff //268,435,455, the most a span of 4 bytes can say, and so the most bytes in any one name, value, or contents
 let _emptyValue //the empty Data an outline holds when it's made or cleared without a value, made on first use, so a program that never makes an outline never makes it
 //the value of an outline made or cleared without one: a Data of no bytes, the same one for all of them; a reader can give an outline an empty Data of its own, which is no value just the same
 function _noValue() {
@@ -1617,7 +1632,7 @@ class _Outline {
   }
   //sort the contents at every level into the order the writers use, for when the order an outline holds matters, like reading it with get; the writers sort a copy of their own, so writing never needs this first
   sort() {
-    _outlineFlat(this) //refuse a cycle or a shared subtree first, as the writers do, since sorting walks the whole tree
+    _checkTree(this) //refuse a cycle or a shared subtree first, as the writers do, since sorting walks the whole tree
     _walk(this, null, (x) => x.#contents.sort(_outlineCompare)) //sort from the deepest levels up, since the walk leaves an outline only after all its contents, then sort this level
   }
 
@@ -1643,7 +1658,7 @@ function _blankOrName(k) {
 
 //express an outline as indented lines of text for code, documentation, and diffs
 function _outlineToText(o) {
-  _outlineFlat(o) //refuse an outline that holds itself, or holds the same outline in two places, before anything walks it
+  _checkTree(o) //refuse an outline that holds itself, or holds the same outline in two places, before anything walks it
   o = _sortedCopy(o) //write a sorted copy, so the text is canonical and the outline the caller has stays as it is
   let s = ''
   let indents = [''] //the indent at each depth, two spaces per level, each made once from the one above it
@@ -1653,9 +1668,15 @@ function _outlineToText(o) {
   })
   return s
 }
-//parse a text outline into its object form
-export function textToOutline(s) {
+//parse a text outline into its object form, within outlineLimits, or within limits a caller passes, any it leaves out keeping their default
+export function textToOutline(s, limits) {
   checkString(s)
+  let { size, depth, nameSize } = _outlineLimitsFrom(limits)
+  let textBytes = _textSize(s)
+  if (textBytes > size)
+    throw new Error(
+      `a text outline of ${textBytes} bytes is past the size limit of ${size}`,
+    ) //before reading any of it
   let lines = s
     .split('\n')
     .map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line))
@@ -1669,6 +1690,10 @@ export function textToOutline(s) {
     let indent = line.match(/^[ \t]*/)[0].length
     let c = cut(line.slice(indent), ':')
     if (!c.found) throw new Error(`no colon in ${JSON.stringify(line)}`) //every line must have a colon separating name from quoted value
+    if (c.before.length > nameSize)
+      throw new Error(
+        `a name of ${c.before.length} bytes is past the name size limit of ${nameSize}`,
+      ) //a name is a-z and 0-9, so its length is its bytes, and a longer name of anything else is refused anyway
 
     //find where the value ends: walk forward through c.after tracking quote state, stop at the first whitespace or # outside quotes
     let valueEnd = c.after.length
@@ -1709,6 +1734,8 @@ export function textToOutline(s) {
       stack.pop() //pop entries that can't be this line's parent (at our level or deeper)
     if (stack.length == 0)
       throw new Error(`more than one root in ${JSON.stringify(s)}`) //outdented past the root, which means there's a second root or worse
+    if (stack.length > depth)
+      throw new Error(`an outline nested past the depth limit of ${depth}`) //this line would be as many levels down as it has outlines above it
     let parent = stack[stack.length - 1]
     if (parent.childIndent == undefined)
       parent.childIndent = indent //first child establishes the indent for this parent's contents
@@ -1717,42 +1744,35 @@ export function textToOutline(s) {
     parent.o.add(o)
     stack.push({ o, indent, childIndent: undefined })
   }
+  _outlineMeasure(root) //refuse an outline the writer couldn't write, with a name, a value, or contents past the span's cap, which only limits raised past it would let through
   return root
+}
+//how many bytes text takes as UTF-8, counted without making them; a lone surrogate counts as the three bytes of the replacement character UTF-8 writes in its place
+function _textSize(s) {
+  let n = 0
+  for (let i = 0; i < s.length; i++) {
+    let c = s.charCodeAt(i)
+    if (c < 0x80) n += 1
+    else if (c < 0x800) n += 2
+    else if (
+      c >= 0xd800 &&
+      c < 0xdc00 &&
+      (s.charCodeAt(i + 1) & 0xfc00) == 0xdc00
+    ) {
+      n += 4 //a pair of surrogates, one character outside the basic plane
+      i++
+    } else n += 3
+  }
+  return n
 }
 
 //serialize an outline to binary data for disk or wire
 function _outlineToData(o) {
-  _outlineFlat(o) //refuse an outline that holds itself, or holds the same outline in two places, before anything walks it
+  _checkTree(o) //refuse an outline that holds itself, or holds the same outline in two places, before anything walks it
   o = _sortedCopy(o) //sort a copy depth-first before we walk the tree, so the output is deterministic, and the outline the caller has stays as it is
-
-  //first pass: measure the exact size we'll need, so we can allocate one buffer and write into it
-  let contentsSizes = new Map() //each outline's contents size, measured on the way out of it, so the second pass looks it up in O(1) instead of recomputing
-  let measured = [] //at each depth, the bytes measured so far of the contents of the outline at that depth
-  let total = 0
-  _walk(
-    o,
-    (x, depth) => {
-      measured[depth] = 0
-    },
-    (x, depth) => {
-      let nameBytes = x.name().length //names are [a-z0-9], so string length equals utf-8 byte count
-      let valueBytes = x.value().size()
-      let contentsBytes = measured[depth] //every outline in x's contents has been measured, since the walk leaves x after them
-      contentsSizes.set(x, contentsBytes)
-      let size =
-        _spanEncode(nameBytes).length +
-        nameBytes + //three (span, bytes) pairs: name, value, contents
-        _spanEncode(valueBytes).length +
-        valueBytes +
-        _spanEncode(contentsBytes).length +
-        contentsBytes
-      if (depth > 0)
-        measured[depth - 1] += size //count x in the contents of the outline above it
-      else total = size
-    },
-  )
+  let { contentsSizes, total } = _outlineMeasure(o) //first pass: measure the exact size we'll need, so we can allocate one buffer and write into it
   let buffer = new Uint8Array(total)
-  let w = 0 //walker, moves forward through buffer as we write bytes into it
+  let w = 0 //cursor, moves forward through buffer as we write bytes into it
 
   //second pass: write the bytes in the same order we just measured
   let _write = (bytes) => {
@@ -1770,18 +1790,60 @@ function _outlineToData(o) {
   })
   return Data({ array: buffer })
 }
-//parse binary data into an outline object
-export function dataToOutline(d) {
+//measure the bytes an outline's binary form takes, and each outline's contents, or throw because a name, a value, or contents is past the span's cap, which the writer can't write
+function _outlineMeasure(o) {
+  let contentsSizes = new Map() //each outline's contents size, measured on the way out of it, so the second pass looks it up in O(1) instead of recomputing
+  let measured = [] //at each depth, the bytes measured so far of the contents of the outline at that depth
+  let total = 0
+  _walk(
+    o,
+    (x, depth) => {
+      measured[depth] = 0
+    },
+    (x, depth) => {
+      let nameBytes = x.name().length //names are [a-z0-9], so string length equals utf-8 byte count
+      let valueBytes = x.value().size()
+      let contentsBytes = measured[depth] //every outline in x's contents has been measured, since the walk leaves x after them
+      if (
+        nameBytes > _spanCap ||
+        valueBytes > _spanCap ||
+        contentsBytes > _spanCap
+      )
+        throw new Error(
+          `an outline with a name, a value, or contents past the span's cap of ${_spanCap} bytes`,
+        )
+      contentsSizes.set(x, contentsBytes)
+      let size =
+        _spanEncode(nameBytes).length +
+        nameBytes + //three (span, bytes) pairs: name, value, contents
+        _spanEncode(valueBytes).length +
+        valueBytes +
+        _spanEncode(contentsBytes).length +
+        contentsBytes
+      if (depth > 0)
+        measured[depth - 1] += size //count x in the contents of the outline above it
+      else total = size
+    },
+  )
+  return { contentsSizes, total }
+}
+//parse binary data into an outline object, within outlineLimits, or within limits a caller passes, any it leaves out keeping their default
+export function dataToOutline(d, limits) {
   let a = _checkData(d).array()
-  let w = 0 //walker, moves forward through a as we read bytes out of it
+  let { size, depth, nameSize } = _outlineLimitsFrom(limits)
+  if (a.length > size)
+    throw new Error(
+      `an outline of ${a.length} bytes is past the size limit of ${size}`,
+    ) //before reading any of it, so bytes past the limit cost nothing
+  let w = 0 //cursor, moves forward through a as we read bytes out of it
 
-  //read a size prefix, advancing the walker
+  //read a size prefix, advancing the cursor
   let _span = () => {
     let { value, bytesRead } = _spanDecode(a, w)
     w += bytesRead
     return value
   }
-  //read n bytes, advancing the walker
+  //read n bytes, advancing the cursor
   let _read = (n) => {
     if (w + n > a.length)
       throw new Error(`an outline needs ${n} bytes at ${w} of ${a.length}`)
@@ -1793,8 +1855,12 @@ export function dataToOutline(d) {
   let _start = () => {
     let o = Outline()
 
-    let nameSize = _span()
-    if (nameSize > 0) o.name(Data({ array: _read(nameSize) }).text()) //a name's bytes are its text, which the setter checks is a-z and 0-9
+    let nameBytes = _span()
+    if (nameBytes > nameSize)
+      throw new Error(
+        `a name of ${nameBytes} bytes is past the name size limit of ${nameSize}`,
+      ) //before reading the name
+    if (nameBytes > 0) o.name(Data({ array: _read(nameBytes) }).text()) //a name's bytes are its text, which the setter checks is a-z and 0-9
 
     let valueSize = _span()
     if (valueSize > 0) o.value(Data({ array: _read(valueSize) })) //zero size stays as the default, no value
@@ -1809,6 +1875,8 @@ export function dataToOutline(d) {
   while (open.length > 0) {
     let top = open[open.length - 1]
     if (w < top.end) {
+      if (open.length > depth)
+        throw new Error(`an outline nested past the depth limit of ${depth}`) //the next outline would be this many levels down, past the limit
       open.push(_start()) //parse contained outlines until we've consumed exactly contentsSize bytes
       continue
     }
@@ -1872,7 +1940,7 @@ function _sortedCopy(o) {
   return copies[0]
 }
 //make sure no outline appears twice in o's tree, in a cycle or as a shared subtree
-function _outlineFlat(o) {
+function _checkTree(o) {
   let seen = new WeakSet()
   _walk(o, (x) => {
     if (seen.has(x))
@@ -1936,7 +2004,7 @@ function _outlineCompareHere(o1, o2) {
 /*
 Span: a variable-length integer encoding for size prefixes in the binary format. Each byte contributes 7 bits of value; the high bit is 1 to continue, 0 to stop. Least-significant byte first (little-endian), matching LEB128 (WebAssembly, DWARF debug info) and Protocol Buffers' varint. Capped at 4 bytes (28 bits), giving a maximum value of 268,435,455 — about 256 MB. Outlines are designed to be small packets, not bulk storage, so this ceiling is generous. An Outline that approaches this size is almost certainly a misuse.
 
-An outline's name, its value, and its contents each come after a span of their size, the root's included, so the cap holds each of them to about 256 MB: the writer refuses an outline with a name, a value, or contents past it, and no span can tell the reader to expect more, though the root's three together can come to about three times that. That's still more than a program should take from outside. An outline takes as few as 3 bytes in its binary form and about a hundred in memory, so reading bytes can take some 30 times their size, and in Node, running out of memory ends the process rather than throwing. So a program that reads outlines from the wire caps how many bytes it accepts before it hands them to dataToOutline, the way a server caps the size of a request body.
+An outline's name, its value, and its contents each come after a span of their size, the root's included, so the cap holds each of them to about 256 MB: the writer refuses an outline with a name, a value, or contents past it, and no span can tell the reader to expect more, though the root's three together can come to about three times that. That cap is the format's own, and it's more than a program should take from a peer it doesn't trust. An outline takes as few as 3 bytes in its binary form and about a hundred in memory, so reading bytes can take some 30 times their size, and in Node, running out of memory ends the process rather than throwing. So both readers hold what they read to limits, the defaults in outlineLimits: 4 MiB in all, 256 levels below the root, and 2 KiB for any one name. They're ceilings far past any outline's intended use, and far below what a system can bear, so reading from a peer you don't trust is safe as it comes, and a program whose outlines run larger passes limits of its own, like dataToOutline(d, {size: 64 * Size.mb}). Each limit refuses as early as it can: the size before reading anything, a name at its span before reading it, and depth the moment the reader goes one level past it. Whatever the limits, a reader still refuses an outline its writer couldn't write.
 */
 //a size as a span, a Data of 1 to 4 bytes, the way an outline's binary form writes each size
 export function spanEncode(n) {
@@ -1996,7 +2064,7 @@ function _spanDecode(a, offset) {
 «"A"00» shows the bits of a null terminator in a language-agnostic way, unlike 'A\0'
 «» blank text is valid quoted encoding to express nothing, size zero bytes
 
-unlike the base encoding of Data, quoted is *not* round-trip!
+unlike the base encodings of Data, quoted is *not* one to one! bytes come back from their quoted text, but many texts read to the same bytes
 a heuristic below balances brevity and readability when choosing which ASCII bytes to expose in quotes
 */
 //true if the given character c is understandable to read in quotes,

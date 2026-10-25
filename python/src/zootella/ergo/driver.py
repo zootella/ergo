@@ -12,6 +12,7 @@ from zootella.ergo import (
     DAY_NAMES,
     HASH_PROTOCOL,
     MONTH_NAMES,
+    OUTLINE_LIMITS,
     SHA1,
     SHA256,
     TAG_LENGTH,
@@ -22,6 +23,7 @@ from zootella.ergo import (
     HashProtocol,
     HashUnit,
     Outline,
+    OutlineLimits,
     Size,
     Span,
     Time,
@@ -151,8 +153,11 @@ functions = {
     "hasOutlineName": has_outline_name,
     "checkOutlineName": check_outline_name,
     "Outline": lambda o, method, *args: _outline_method(o, method, args),
-    "textToOutline": text_to_outline,
-    "dataToOutline": data_to_outline,
+    "textToOutline": lambda s, limits=None: text_to_outline(s, _outline_limits(limits)),
+    "outlineLimits.size": OUTLINE_LIMITS.size,
+    "outlineLimits.depth": OUTLINE_LIMITS.depth,
+    "outlineLimits.nameSize": OUTLINE_LIMITS.name_size,
+    "dataToOutline": lambda d, limits=None: data_to_outline(d, _outline_limits(limits)),
     "spanEncode": span_encode,
     "spanDecode": lambda data, offset: _span_answer(span_decode(data, offset)),
     "dataToQuoted": data_to_quoted,
@@ -267,6 +272,14 @@ def _outline_method(o: Outline | str | None, method: str, args: tuple) -> object
     if answer is None:
         return o
     return answer
+
+
+def _outline_limits(v: dict | None) -> OutlineLimits:
+    """Limits from json like {"size": 64, "nameSize": 8}, any left out keeping their default, as javascript's spread does, or the defaults when there are none."""
+    if v is None:
+        return OUTLINE_LIMITS
+    names = {"size": "size", "depth": "depth", "nameSize": "name_size"}
+    return OutlineLimits(**{names[k]: n for k, n in v.items()})
 
 
 def _span_answer(s: Span) -> dict:

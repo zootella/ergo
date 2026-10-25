@@ -16,6 +16,7 @@ import {
   tickToIso,
   Data,
   sha256,
+  Outline,
 } from '@zootella/ergo'
 
 let t = Tag() // a new tag, like "AgKxru95C7jFp5iPuK9O7": 21 letters and numerals
@@ -26,6 +27,9 @@ tickToText(deadline) // "2026oct15.2041.7125", a tick's short exact text
 tickToIso(deadline) // "2026-10-15T20:41:07.125Z", the same tick's iso text
 let d = Data({ text: 'hello' }) // bytes, which read out as base16, base32, base62, base64, or text
 ;(await sha256(d)).base32() // the SHA-256 hash, as a Data, out in any form; sha1 and blake3 work the same way
+let o = Outline('orchard') // an outline, a tree of names and values of bytes
+o.m('basket').m('note').value(d) // m makes as it navigates, so a chain builds as it goes
+o.text() // 'orchard:\n  basket:\n    note:"hello"\n', and o.data() is the same as bytes
 ```
 
 Documentation for every function, in all four languages, is at [zootella.com](https://zootella.com). The source and the shared test suite are at [github.com/zootella/ergo](https://github.com/zootella/ergo).

@@ -2178,6 +2178,48 @@ pub fn check_outline_name(s: &str) -> &str {
     s
 }
 
+/// The limits a reader holds an outline to. The defaults, [`OutlineLimits::default`], are ceilings far past any outline's intended use, and far below what a system can bear, so reading bytes or text from a peer you don't trust is safe as it comes, and a program with outlines of its own size sets what it needs and takes the rest from the defaults.
+///
+/// ```
+/// use zootella_ergo::{Outline, OutlineLimits, size};
+/// let limits = OutlineLimits { size: 64 * size::MB as usize, ..OutlineLimits::default() };
+/// assert_eq!(limits.data_to_outline(&Outline::new("x").data()).unwrap().name(), "x");
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutlineLimits {
+    /// The most bytes a reader takes, of binary, or of text as UTF-8, 4 MiB by default.
+    pub size: usize,
+    /// The most levels of contents below the root, which alone is depth 0, 256 by default.
+    pub depth: usize,
+    /// The most bytes in any one name, 2 KiB by default.
+    pub name_size: usize,
+}
+
+/// 4 MiB in all, 256 levels below the root, and 2 KiB for any one name.
+impl Default for OutlineLimits {
+    fn default() -> OutlineLimits {
+        OutlineLimits {
+            size: (4 * size::MB) as usize,
+            depth: 256,
+            name_size: (2 * size::KB) as usize,
+        }
+    }
+}
+
+impl OutlineLimits {
+    /// Parse a text outline into an [`Outline`] within these limits, or an [`OutlineError`] because the text isn't one; [`text_to_outline`] says how it reads.
+    pub fn text_to_outline(&self, s: &str) -> Result<Outline, OutlineError> {
+        outline_from_text(s, self)
+    }
+    /// Parse bytes into an [`Outline`] within these limits, or an [`OutlineError`] because they aren't one; [`data_to_outline`] says how it reads.
+    pub fn data_to_outline(&self, d: &Data) -> Result<Outline, OutlineError> {
+        outline_from_data(d, self)
+    }
+}
+
+/// 268,435,455, the most a span of 4 bytes can say, and so the most bytes in any one name, value, or contents.
+const SPAN_CAP: usize = 0x0fff_ffff;
+
 /// The value of an outline made or cleared without one: a Data of no bytes, the same one for all of them, made on first use, so a program that never makes an outline never makes it. A reader can give an outline an empty Data of its own, which is no value just the same.
 fn no_value() -> Data {
     static EMPTY: std::sync::OnceLock<Data> = std::sync::OnceLock::new();
@@ -2487,13 +2529,25 @@ fn outline_to_text(o: &Outline) -> String {
     s
 }
 
-/// Parse a text outline into an [`Outline`], or an [`OutlineError`] because the text isn't one. It reads leniently, for text a person or an agent wrote by hand: any indent, as long as an outline's contents share one, blank lines, `#` comments at the end of a line or on a line of their own, and contents in any order, which it keeps.
+/// Parse a text outline into an [`Outline`], within [`OutlineLimits::default`], or an [`OutlineError`] because the text isn't one. It reads leniently, for text a person or an agent wrote by hand: any indent, as long as an outline's contents share one, blank lines, `#` comments at the end of a line or on a line of their own, and contents in any order, which it keeps.
 ///
 /// ```
 /// let o = zootella_ergo::text_to_outline("orchard:\n  tree:\"apple\"  # a comment\n").unwrap();
 /// assert_eq!(o.n("tree").value().text().unwrap(), "apple");
 /// ```
 pub fn text_to_outline(s: &str) -> Result<Outline, OutlineError> {
+    OutlineLimits::default().text_to_outline(s)
+}
+
+/// Parse a text outline within limits, for [`text_to_outline`] and [`OutlineLimits::text_to_outline`].
+fn outline_from_text(s: &str, limits: &OutlineLimits) -> Result<Outline, OutlineError> {
+    if s.len() > limits.size {
+        return Err(OutlineError(format!(
+            "a text outline of {} bytes is past the size limit of {}",
+            s.len(),
+            limits.size
+        ))); // before reading any of it; len counts a string's bytes
+    }
     // accept both \r\n and \n line endings, splitting at the line feed alone rather than at every line ending unicode knows, and skip blank lines, and lines that are only a comment, at any indent
     let lines: Vec<&str> = s
         .split('\n')
@@ -2512,6 +2566,13 @@ pub fn text_to_outline(s: &str) -> Result<Outline, OutlineError> {
         let c = cut(&line[indent..], ":");
         if !c.found {
             return Err(OutlineError(format!("no colon in {line:?}"))); // every line must have a colon separating name from quoted value
+        }
+        if c.before.len() > limits.name_size {
+            return Err(OutlineError(format!(
+                "a name of {} bytes is past the name size limit of {}",
+                c.before.len(),
+                limits.name_size
+            )));
         }
 
         // find where the value ends: walk forward through c.after tracking quote state, stop at the first whitespace or # outside quotes
@@ -2570,6 +2631,12 @@ pub fn text_to_outline(s: &str) -> Result<Outline, OutlineError> {
             let done = stack.pop().expect("an entry above the root");
             stack.last_mut().expect("the root").o.add(done.o);
         }
+        if stack.len() > limits.depth {
+            return Err(OutlineError(format!(
+                "an outline nested past the depth limit of {}",
+                limits.depth
+            ))); // this line would be as many levels down as it has outlines above it
+        }
         let parent = stack.last_mut().expect("the root, which stays");
         match parent.child_indent {
             None => parent.child_indent = Some(indent), // first child establishes the indent for this parent's contents
@@ -2589,7 +2656,13 @@ pub fn text_to_outline(s: &str) -> Result<Outline, OutlineError> {
         let done = stack.pop().expect("an entry above the root");
         stack.last_mut().expect("the root").o.add(done.o);
     }
-    Ok(stack.pop().expect("the root").o)
+    let root = stack.pop().expect("the root").o;
+    if outline_measure(&root).is_none() {
+        return Err(OutlineError(format!(
+            "an outline with a name, a value, or contents past the span's cap of {SPAN_CAP} bytes"
+        ))); // refuse an outline the writer couldn't write, which only limits raised past the cap would let through
+    }
+    Ok(root)
 }
 
 /// Serialize an outline to binary data for disk or wire.
@@ -2597,33 +2670,11 @@ fn outline_to_data(o: &Outline) -> Data {
     let o = sorted_copy(o); // sort a copy depth-first before we walk the tree, so the output is deterministic, and the outline the caller has stays as it is
 
     // first pass: measure the exact size we'll need, so we can allocate one buffer and write into it
-    let mut contents_sizes: std::collections::HashMap<*const Outline, usize> =
-        std::collections::HashMap::new(); // each outline's contents size, measured on the way out of it, so the second pass looks it up in O(1) instead of recomputing
-    let mut measured: Vec<usize> = Vec::new(); // at each depth, the bytes measured so far of the contents of the outline at that depth
-    let mut total = 0;
-    walk(&o, |step| match step {
-        Step::Enter(_, depth) => {
-            measured.truncate(depth);
-            measured.push(0);
-        }
-        Step::Leave(x, depth) => {
-            let name_bytes = x.name.len(); // len counts a string's bytes
-            let value_bytes = x.value.size();
-            let contents_bytes = measured[depth]; // every outline in x's contents has been measured, since the walk leaves x after them
-            contents_sizes.insert(std::ptr::from_ref(x), contents_bytes);
-            let size = span_bytes(name_bytes).len() // three (span, bytes) pairs: name, value, contents
-                + name_bytes
-                + span_bytes(value_bytes).len()
-                + value_bytes
-                + span_bytes(contents_bytes).len()
-                + contents_bytes;
-            if depth > 0 {
-                measured[depth - 1] += size; // count x in the contents of the outline above it
-            } else {
-                total = size;
-            }
-        }
-    });
+    let Some((contents_sizes, total)) = outline_measure(&o) else {
+        panic!(
+            "an outline with a name, a value, or contents past the span's cap of {SPAN_CAP} bytes"
+        );
+    };
 
     // second pass: write the bytes in the same order we just measured, into one buffer made the exact size
     let mut buffer = Vec::with_capacity(total);
@@ -2639,7 +2690,57 @@ fn outline_to_data(o: &Outline) -> Data {
     Data::from(buffer)
 }
 
-/// Parse bytes into an [`Outline`], or an [`OutlineError`] because they aren't exactly what [`Outline::data`] writes: contents sorted at every level, every span in its shortest form, and nothing after. It's strict, for bytes from the wire, and a program reading from the wire caps how many bytes it accepts first.
+/// Measure the bytes an outline's binary form takes, and each outline's contents, or None because a name, a value, or contents is past the span's cap, which the writer can't write.
+fn outline_measure(
+    o: &Outline,
+) -> Option<(std::collections::HashMap<*const Outline, usize>, usize)> {
+    let mut fits = true;
+    let mut contents_sizes: std::collections::HashMap<*const Outline, usize> =
+        std::collections::HashMap::new(); // each outline's contents size, measured on the way out of it, so the second pass looks it up in O(1) instead of recomputing
+    let mut measured: Vec<usize> = Vec::new(); // at each depth, the bytes measured so far of the contents of the outline at that depth
+    let mut total = 0;
+    walk(o, |step| match step {
+        Step::Enter(_, depth) => {
+            measured.truncate(depth);
+            measured.push(0);
+        }
+        Step::Leave(x, depth) => {
+            let name_bytes = x.name.len(); // len counts a string's bytes
+            let value_bytes = x.value.size();
+            let contents_bytes = measured[depth]; // every outline in x's contents has been measured, since the walk leaves x after them
+            if name_bytes.max(value_bytes).max(contents_bytes) > SPAN_CAP {
+                fits = false;
+            }
+            contents_sizes.insert(std::ptr::from_ref(x), contents_bytes);
+            let size = span_size(name_bytes) // three (span, bytes) pairs: name, value, contents
+                + name_bytes
+                + span_size(value_bytes)
+                + value_bytes
+                + span_size(contents_bytes)
+                + contents_bytes;
+            if depth > 0 {
+                measured[depth - 1] += size; // count x in the contents of the outline above it
+            } else {
+                total = size;
+            }
+        }
+    });
+
+    fits.then_some((contents_sizes, total))
+}
+
+/// How many bytes a span takes to say n, 1 to 4, or 5 past the cap, which only measuring an outline the writer will refuse can reach.
+fn span_size(n: usize) -> usize {
+    match n {
+        0..0x80 => 1,
+        0x80..0x4000 => 2,
+        0x4000..0x20_0000 => 3,
+        0x20_0000..=SPAN_CAP => 4,
+        _ => 5,
+    }
+}
+
+/// Parse bytes into an [`Outline`], within [`OutlineLimits::default`], or an [`OutlineError`] because they aren't exactly what [`Outline::data`] writes: contents sorted at every level, every span in its shortest form, and nothing after. It's strict, for bytes from the wire.
 ///
 /// ```
 /// use zootella_ergo::{Data, Outline, data_to_outline};
@@ -2649,13 +2750,35 @@ fn outline_to_data(o: &Outline) -> Data {
 /// assert!(data_to_outline(&Data::from_base16("000000ff").unwrap()).is_err()); // a byte after the outline
 /// ```
 pub fn data_to_outline(d: &Data) -> Result<Outline, OutlineError> {
-    let mut r = Reader { a: d.array(), w: 0 };
+    OutlineLimits::default().data_to_outline(d)
+}
+
+/// Parse bytes within limits, for [`data_to_outline`] and [`OutlineLimits::data_to_outline`].
+fn outline_from_data(d: &Data, limits: &OutlineLimits) -> Result<Outline, OutlineError> {
+    if d.size() > limits.size {
+        return Err(OutlineError(format!(
+            "an outline of {} bytes is past the size limit of {}",
+            d.size(),
+            limits.size
+        ))); // before reading any of it, so bytes past the limit cost nothing
+    }
+    let mut r = Reader {
+        a: d.array(),
+        w: 0,
+        name_size: limits.name_size,
+    };
 
     // parse outlines inside outlines with a stack of our own, rather than calling ourselves for each level down: the outlines still being parsed, from the root down, each with where its contents end
     let mut open = vec![r.start()?];
     let root = loop {
         let end = open.last().expect("the outline being parsed").1;
         if r.w < end {
+            if open.len() > limits.depth {
+                return Err(OutlineError(format!(
+                    "an outline nested past the depth limit of {}",
+                    limits.depth
+                ))); // the next outline would be this many levels down, past the limit
+            }
             open.push(r.start()?); // parse contained outlines until we've consumed exactly the contents span's bytes
             continue;
         }
@@ -2689,20 +2812,21 @@ pub fn data_to_outline(d: &Data) -> Result<Outline, OutlineError> {
     Ok(root)
 }
 
-/// The bytes the binary reader reads, and the walker that moves forward through them as it reads.
+/// The bytes the binary reader reads, the cursor that moves forward through them as it reads, and the most bytes a name can take.
 struct Reader<'a> {
     a: &'a [u8],
     w: usize,
+    name_size: usize,
 }
 
 impl<'a> Reader<'a> {
-    /// Read a size prefix, advancing the walker.
+    /// Read a size prefix, advancing the cursor.
     fn span(&mut self) -> Result<usize, OutlineError> {
         let s = read_span(self.a, self.w)?;
         self.w += s.bytes_read;
         Ok(s.value)
     }
-    /// Read n bytes, advancing the walker.
+    /// Read n bytes, advancing the cursor.
     fn read(&mut self, n: usize) -> Result<&'a [u8], OutlineError> {
         if self.w + n > self.a.len() {
             return Err(OutlineError(format!(
@@ -2719,9 +2843,15 @@ impl<'a> Reader<'a> {
     fn start(&mut self) -> Result<(Outline, usize), OutlineError> {
         let mut o = Outline::new("");
 
-        let name_size = self.span()?;
-        if name_size > 0 {
-            let b = self.read(name_size)?;
+        let name_bytes = self.span()?;
+        if name_bytes > self.name_size {
+            return Err(OutlineError(format!(
+                "a name of {name_bytes} bytes is past the name size limit of {}",
+                self.name_size
+            ))); // before reading the name
+        }
+        if name_bytes > 0 {
+            let b = self.read(name_bytes)?;
             let name = Data::from_array(b).text()?; // a name's bytes are its text, which must be a-z and 0-9
             if !has_outline_name(&name) {
                 return Err(OutlineError(format!("not an outline name: {name:?}")));
@@ -2844,7 +2974,7 @@ fn outline_compare_here(o1: &Outline, o2: &Outline) -> std::cmp::Ordering {
 
 // Span: a variable-length integer encoding for size prefixes in the binary format. Each byte contributes 7 bits of value; the high bit is 1 to continue, 0 to stop. Least-significant byte first (little-endian), matching LEB128 (WebAssembly, DWARF debug info) and Protocol Buffers' varint. Capped at 4 bytes (28 bits), giving a maximum value of 268,435,455 — about 256 MB. Outlines are designed to be small packets, not bulk storage, so this ceiling is generous. An Outline that approaches this size is almost certainly a misuse.
 //
-// An outline's name, its value, and its contents each come after a span of their size, the root's included, so the cap holds each of them to about 256 MB: the writer refuses an outline with a name, a value, or contents past it, and no span can tell the reader to expect more, though the root's three together can come to about three times that. That's still more than a program should take from outside. An outline takes as few as 3 bytes in its binary form and about 72 in memory, so reading bytes can take more than 20 times their size, and when Rust can't get the memory it asks for, it aborts the process, which nothing can catch. So a program that reads outlines from the wire caps how many bytes it accepts before it hands them to data_to_outline, the way a server caps the size of a request body.
+// An outline's name, its value, and its contents each come after a span of their size, the root's included, so the cap holds each of them to about 256 MB: the writer refuses an outline with a name, a value, or contents past it, and no span can tell the reader to expect more, though the root's three together can come to about three times that. That cap is the format's own, and it's more than a program should take from a peer it doesn't trust. An outline takes as few as 3 bytes in its binary form and about 72 in memory, so reading bytes can take more than 20 times their size, and when Rust can't get the memory it asks for, it aborts the process, which nothing can catch. So both readers hold what they read to limits, the defaults in OutlineLimits::default(): 4 MiB in all, 256 levels below the root, and 2 KiB for any one name. They're ceilings far past any outline's intended use, and far below what a system can bear, so reading from a peer you don't trust is safe as it comes, and a program whose outlines run larger sets limits of its own and reads with them, like OutlineLimits { size, ..OutlineLimits::default() }.data_to_outline(&d). Each limit refuses as early as it can: the size before reading anything, a name at its span before reading it, and depth the moment the reader goes one level past it. Whatever the limits, a reader still refuses an outline its writer couldn't write.
 
 /// What [`span_decode`] reads: the size the span says, and how many bytes the span took, so a reader can move past it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2930,7 +3060,7 @@ fn read_span(a: &[u8], offset: usize) -> Result<Span, OutlineError> {
 // «"A"00» shows the bits of a null terminator in a language-agnostic way, unlike 'A\0'
 // «» blank text is valid quoted encoding to express nothing, size zero bytes
 //
-// unlike the base encoding of Data, quoted is *not* round-trip!
+// unlike the base encodings of Data, quoted is *not* one to one! bytes come back from their quoted text, but many texts read to the same bytes
 // a heuristic below balances brevity and readability when choosing which ASCII bytes to expose in quotes
 
 /// True if the given character c is understandable to read in quotes: space through tilde, but not the double quotation mark itself, which is our delimiter!

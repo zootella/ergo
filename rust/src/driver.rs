@@ -158,10 +158,15 @@ fn run(call: &str, args: &[Value]) -> Result<Value, String> {
         "hasOutlineName" => Ok(json!(crate::has_outline_name(text(args, 0)?))),
         "checkOutlineName" => Ok(json!(crate::check_outline_name(text(args, 0)?))),
         "Outline" => outline_method(args),
-        "textToOutline" => crate::text_to_outline(text(args, 0)?)
+        "outlineLimits.size" => Ok(json!(crate::OutlineLimits::default().size)),
+        "outlineLimits.depth" => Ok(json!(crate::OutlineLimits::default().depth)),
+        "outlineLimits.nameSize" => Ok(json!(crate::OutlineLimits::default().name_size)),
+        "textToOutline" => limits(args.get(1))?
+            .text_to_outline(text(args, 0)?)
             .map(|o| outline_json(&o))
             .map_err(|e| e.to_string()),
-        "dataToOutline" => crate::data_to_outline(&bytes(args, 0)?)
+        "dataToOutline" => limits(args.get(1))?
+            .data_to_outline(&bytes(args, 0)?)
             .map(|o| outline_json(&o))
             .map_err(|e| e.to_string()),
         "spanEncode" => Ok(base16(&crate::span_encode(index(args, 0)?))),
@@ -349,6 +354,28 @@ fn outline_from(v: &Value) -> Result<Option<crate::Outline>, String> {
 fn outline_json(o: &crate::Outline) -> Value {
     let contents: Vec<Value> = (0..o.length()).map(|i| outline_json(o.get(i))).collect();
     json!({"name": o.name(), "value": base16(o.value()), "contents": contents})
+}
+
+/// Outline limits from json like {"size": 64, "nameSize": 8}, any left out keeping their default, as javascript's spread does, or the defaults when there are none.
+fn limits(v: Option<&Value>) -> Result<crate::OutlineLimits, String> {
+    let mut l = crate::OutlineLimits::default();
+    let Some(v) = v.filter(|v| !v.is_null()) else {
+        return Ok(l);
+    };
+    let m = v.as_object().ok_or("limits must be an object")?;
+    for (k, n) in m {
+        let n = n
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or_else(|| format!("the {k} limit must be a count"))?;
+        match k.as_str() {
+            "size" => l.size = n,
+            "depth" => l.depth = n,
+            "nameSize" => l.name_size = n,
+            _ => return Err(format!("not an outline limit: {k}")),
+        }
+    }
+    Ok(l)
 }
 
 /// Argument i as an outline name, where null or a missing argument is "", the blank name, since this edition has no null.

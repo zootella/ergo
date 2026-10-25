@@ -1,6 +1,13 @@
 """Outline's own test in this edition, beside the shared vectors: every walk keeps a stack of its own, so an outline goes as deep as memory allows."""
 
-from zootella.ergo import Data, Outline, data_to_outline
+from zootella.ergo import Data, Outline, OutlineLimits, data_to_outline
+
+
+def test_outline_prints() -> None:
+    """An outline prints as a short summary, never all of its contents."""
+    o = Outline("x", Data(text="hi"))
+    o.add("a")
+    assert repr(o) == "Outline(name='x', value=Data(base16='6869'), length=1)"
 
 
 def test_outline_goes_deep() -> None:
@@ -25,7 +32,8 @@ def test_outline_goes_deep() -> None:
     # the same all the way down but the value at the bottom, and in the wrong order, so putting them in order compares ten thousand levels deep
     o.add(chain("00"))
     d = o.data()
-    back = data_to_outline(d)
+    # past the default depth of 256, which a caller with outlines this deep raises
+    back = data_to_outline(d, OutlineLimits(depth=10001))
     assert back.data().base16() == d.base16()
     # the bytes came out in order
     assert bottom_of(back.get(0)).value().base16() == "00"
