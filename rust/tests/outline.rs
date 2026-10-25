@@ -2,9 +2,19 @@
 
 use zootella_ergo::{Data, Outline, data_to_outline};
 
-/// Two chains ten thousand levels down write, read back, sort, and compare, and then drop, on a test thread's stack of 2 MB, where a walk that called itself, or an outline that freed its contents by recursion, would abort the test.
+/// Two chains ten thousand levels down write, read back, sort, and compare, and then drop, on a thread with a stack of 128 KB, where a walk that called itself, or an outline that freed its contents by recursion, would overflow and abort the test, in a debug build or a release one.
 #[test]
 fn outline_goes_deep() {
+    std::thread::Builder::new()
+        .stack_size(128 * 1024) // small on purpose: a test thread's own 2 MB fits ten thousand levels of some recursions once a release build shrinks their frames
+        .spawn(deep)
+        .expect("a thread for the deep test")
+        .join()
+        .expect("the deep test passes");
+}
+
+/// The deep test itself, on the small stack.
+fn deep() {
     // the text form isn't here, since a line's indent grows with its depth, so the text of an outline this deep would be a hundred million spaces
     let chain = |bottom: &str| {
         let mut top = Outline::new("a");

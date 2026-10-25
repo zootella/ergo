@@ -1480,7 +1480,7 @@ The closest inspiration is Bencoding (Bram Cohen, 2001), the serialization forma
 MessagePack (Furuhashi, 2008), CBOR (RFC 7049, 2013), and Protocol Buffers (Google, 2008) solve a different problem. They are general-purpose serialization formats with rich type systems — integers, floats, strings, arrays, maps, booleans, nulls, extension types. Powerful, but more complex than needed when all your values are just bytes. Protobuf additionally requires schema files compiled ahead of time. Outline is deliberately simpler.
 
 Outline has two serialization formats:
-- Text: indented lines like «name:"value"0a» using quoted encoding with dataToQuoted(). Visible in source code as template literals, explains itself in markdown documentation, diffs alongside code in version control. The parser is lenient about indentation width (2 spaces, 4 spaces, tabs), accepts trailing whitespace, blank lines, and # comments at the end of a line or on a line of their own, and takes contents in any order, so pasted or hand-edited text tolerates reasonable sloppiness. The writer is canonical, sorted at every level.
+- Text: indented lines like «name:"value"0a» using quoted encoding with dataToQuoted(). Visible in source code as template literals, explains itself in markdown documentation, diffs alongside code in version control. The parser is lenient about indentation width (2 spaces, 4 spaces, tabs), accepts trailing spaces and tabs, blank lines, and # comments at the end of a line or on a line of their own, and takes contents in any order, so pasted or hand-edited text tolerates reasonable sloppiness. The writer is canonical, sorted at every level.
 - Binary: span-prefixed length encoding (name size, name, value size, value, contents size, contents) with no delimiters or escaping. Compact and unambiguous — data stays the same size on the wire, unlike JSON which inflates binary with escape sequences. Strict, too: the reader takes only what the writer writes, sorted at every level.
 
 One value type (bytes), one tree structure, deterministic sort, a text form and a binary form. It runs anywhere JavaScript does — browser, Node, Worker — with no dependencies, no schema files, and no build step.
@@ -1492,7 +1492,7 @@ Rules for designing an outline that you're going to use in your application:
 - Values are bytes, as raw and granular as possible. No compression, no structured formats, no length-prefixed sub-records; if you have structure, use nested contents instead of packing it into a value.
 - No version numbers or vendor codes. An outline grows by adding new names; readers ignore names they don't recognize.
 - Outlines are short packets, not bulk storage. A typical outline is well under 8 KB as binary.
-- Outlines must be strict trees. No cycles, no shared subtrees--the same outline instance appearing in two places is rejected at serialization time. This matches the text form, which has no way to express sharing.
+- Outlines must be strict trees. No cycles, no shared subtrees--the same outline instance appearing in two places is refused when it's written or sorted. This matches the text form, which has no way to express sharing.
 */
 
 //true if s is a name an outline can have: lowercase letters and numerals, or blank; never throws, so a name from outside can be asked about first
@@ -1505,8 +1505,8 @@ export function checkOutlineName(s) {
     throw new Error(`not an outline name: ${JSON.stringify(s)}`)
   return s
 }
-let _emptyValue //the one empty Data every outline without a value holds, made on first use, so a program that never makes an outline never makes it
-//the value of an outline without one: a Data of no bytes, the same one for all of them
+let _emptyValue //the empty Data an outline holds when it's made or cleared without a value, made on first use, so a program that never makes an outline never makes it
+//the value of an outline made or cleared without one: a Data of no bytes, the same one for all of them; a reader can give an outline an empty Data of its own, which is no value just the same
 function _noValue() {
   if (!_emptyValue) _emptyValue = Data({ array: new Uint8Array(0) })
   return _emptyValue
@@ -1565,13 +1565,13 @@ class _Outline {
       throw new Error(`no outline ${i} in ${this.#contents.length}`)
     return this.#contents[i]
   }
-  //add to this outline's contents
+  //add to this outline's contents; an outline already in this tree makes a cycle or a shared subtree, which sort and the writers refuse
   add(a) {
-    if (a.type == 'Outline')
-      this.#contents.push(a) //add an outline you've already built
+    if (a instanceof _Outline)
+      this.#contents.push(a) //add an outline you've already built, made by this ergo, since sort reaches into its private contents
     else if (typeof a == 'string')
       this.#contents.push(Outline(a)) //add a new outline with this name
-    else if (a.type == 'Data')
+    else if (a?.type == 'Data')
       this.#contents.push(Outline('', a)) //add a new unnamed outline with this value
     else throw new Error(`an outline adds an Outline, a name, or a Data: ${a}`)
   }
@@ -1615,17 +1615,17 @@ class _Outline {
     this.#value = _noValue()
     this.#contents = []
   }
-  //sort all nested contents, at every level, so identical information produces identical serialization
+  //sort the contents at every level into the order the writers use, for when the order an outline holds matters, like reading it with get; the writers sort a copy of their own, so writing never needs this first
   sort() {
     _outlineFlat(this) //refuse a cycle or a shared subtree first, as the writers do, since sorting walks the whole tree
     _walk(this, null, (x) => x.#contents.sort(_outlineCompare)) //sort from the deepest levels up, since the walk leaves an outline only after all its contents, then sort this level
   }
 
   text() {
-    return _outlineToText(this) //text serialization, visible in source and documentation
+    return _outlineToText(this) //text serialization, visible in source and documentation, sorted at every level from a copy, so this outline stays as it is
   }
   data() {
-    return _outlineToData(this) //binary serialization, compact on the wire
+    return _outlineToData(this) //binary serialization, compact on the wire, sorted the same way
   }
 }
 //normalize and validate a name for the setter and all lookups: undefined and null become blank, and anything else must be a name
@@ -1643,7 +1643,7 @@ function _blankOrName(k) {
 
 //express an outline as indented lines of text for code, documentation, and diffs
 function _outlineToText(o) {
-  _outlineFlat(o) //guard against user-supplied cycles before sort
+  _outlineFlat(o) //refuse an outline that holds itself, or holds the same outline in two places, before anything walks it
   o = _sortedCopy(o) //write a sorted copy, so the text is canonical and the outline the caller has stays as it is
   let s = ''
   let indents = [''] //the indent at each depth, two spaces per level, each made once from the one above it
@@ -1710,9 +1710,9 @@ export function textToOutline(s) {
     if (stack.length == 0)
       throw new Error(`more than one root in ${JSON.stringify(s)}`) //outdented past the root, which means there's a second root or worse
     let parent = stack[stack.length - 1]
-    if (parent.childIndent === undefined)
+    if (parent.childIndent == undefined)
       parent.childIndent = indent //first child establishes the indent for this parent's contents
-    else if (parent.childIndent !== indent)
+    else if (parent.childIndent != indent)
       throw new Error(`uneven indent in ${JSON.stringify(s)}`) //siblings must share the same indent; a mismatched indent is ambiguous
     parent.o.add(o)
     stack.push({ o, indent, childIndent: undefined })
@@ -1722,12 +1722,12 @@ export function textToOutline(s) {
 
 //serialize an outline to binary data for disk or wire
 function _outlineToData(o) {
-  _outlineFlat(o) //guard against user-supplied cycles before sort
+  _outlineFlat(o) //refuse an outline that holds itself, or holds the same outline in two places, before anything walks it
   o = _sortedCopy(o) //sort a copy depth-first before we walk the tree, so the output is deterministic, and the outline the caller has stays as it is
 
   //first pass: measure the exact size we'll need, so we can allocate one buffer and write into it
   let contentsSizes = new Map() //each outline's contents size, measured on the way out of it, so the second pass looks it up in O(1) instead of recomputing
-  let measured = [] //at each depth, the bytes measured so far of the contents of the outline the walk is in there
+  let measured = [] //at each depth, the bytes measured so far of the contents of the outline at that depth
   let total = 0
   _walk(
     o,
@@ -1813,7 +1813,7 @@ export function dataToOutline(d) {
       continue
     }
     if (w != top.end)
-      throw new Error(`an outline's contents ran past their size`) //overran or underran the contents region, input is malformed
+      throw new Error(`an outline's contents ran past their size`) //overran the contents region, since a reader short of the end goes on to the next outline inside, so the input is malformed
 
     //top is whole, its contents all parsed, so now it can be compared and added to the outline above it
     open.pop()
@@ -1871,7 +1871,7 @@ function _sortedCopy(o) {
   )
   return copies[0]
 }
-//make sure o doesn't have a cycle or duplicate
+//make sure no outline appears twice in o's tree, in a cycle or as a shared subtree
 function _outlineFlat(o) {
   let seen = new WeakSet()
   _walk(o, (x) => {
@@ -1882,10 +1882,10 @@ function _outlineFlat(o) {
     seen.add(x)
   })
 }
-//compare two outlines for sort order: name first, then value, then nested contents pairwise down the whole tree
+//compare two outlines for sort order: name first, then value, then nested contents pairwise down the whole tree; pairwise gives the canonical order only when the levels below are already in it, so every caller sorts or checks them first
 function _outlineCompare(o1, o2) {
   let c = _outlineCompareHere(o1, o2)
-  if (c) return c //names or values differ, which settles nearly every comparison a sort makes, with nothing made to do it
+  if (c != 0) return c //names or values differ, which settles nearly every comparison a sort makes, with nothing made to do it
 
   //value tied, so we examine contents pairwise, with a stack of our own of the pairs still to compare, rather than calling ourselves for each level down
   let pending = [] //the pair on top is next; a pair marked counts compares how many contents its two outlines hold, once all the pairs of their contents have tied
@@ -1902,7 +1902,7 @@ function _outlineCompare(o1, o2) {
       if (a.length() > b.length()) return 1
     } else {
       let c = _outlineCompareHere(a, b)
-      if (c) return c //every caller sorts or checks deeper levels first, so contents at each level are already in order
+      if (c != 0) return c //every caller sorts or checks deeper levels first, so contents at each level are already in order
       _push(a, b)
     }
   }
@@ -1936,7 +1936,7 @@ function _outlineCompareHere(o1, o2) {
 /*
 Span: a variable-length integer encoding for size prefixes in the binary format. Each byte contributes 7 bits of value; the high bit is 1 to continue, 0 to stop. Least-significant byte first (little-endian), matching LEB128 (WebAssembly, DWARF debug info) and Protocol Buffers' varint. Capped at 4 bytes (28 bits), giving a maximum value of 268,435,455 — about 256 MB. Outlines are designed to be small packets, not bulk storage, so this ceiling is generous. An Outline that approaches this size is almost certainly a misuse.
 
-The size of an outline's contents is a span too, the root's included, so the cap bounds an outline's whole binary form at about 256 MB: the writer refuses an outline whose bytes would pass it, and no span can tell the reader to expect more. That's still more than a program should take from outside. An outline takes as few as 3 bytes in its binary form and about a hundred in memory, so reading bytes can take some 30 times their size, and in Node, running out of memory ends the process rather than throwing. So a program that reads outlines from the wire caps how many bytes it accepts before it hands them to dataToOutline, the way a server caps the size of a request body.
+An outline's name, its value, and its contents each come after a span of their size, the root's included, so the cap holds each of them to about 256 MB: the writer refuses an outline with a name, a value, or contents past it, and no span can tell the reader to expect more, though the root's three together can come to about three times that. That's still more than a program should take from outside. An outline takes as few as 3 bytes in its binary form and about a hundred in memory, so reading bytes can take some 30 times their size, and in Node, running out of memory ends the process rather than throwing. So a program that reads outlines from the wire caps how many bytes it accepts before it hands them to dataToOutline, the way a server caps the size of a request body.
 */
 //a size as a span, a Data of 1 to 4 bytes, the way an outline's binary form writes each size
 export function spanEncode(n) {
@@ -1964,8 +1964,8 @@ function _spanDecode(a, offset) {
   let n = 0
   let shift = 0
   let i = offset
+  //at most 4 bytes; more than that means malformed input
   for (let count = 0; count < 4; count++) {
-    //at most 4 bytes; more than that means malformed input
     if (i >= a.length) throw new Error(`a span runs past the end at ${i}`)
     let y = a[i++]
     n |= (y & 0x7f) << shift //accumulate the 7 value bits at their proper place

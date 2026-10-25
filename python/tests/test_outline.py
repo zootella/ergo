@@ -27,10 +27,8 @@ def test_outline_goes_deep() -> None:
     d = o.data()
     back = data_to_outline(d)
     assert back.data().base16() == d.base16()
-    assert (
-        bottom_of(back.get(0)).value().base16() == "00"
-    )  # the bytes came out in order
+    # the bytes came out in order
+    assert bottom_of(back.get(0)).value().base16() == "00"
     o.sort()
-    assert (
-        bottom_of(o.get(0)).value().base16() == "00"
-    )  # and sort put them in order, too
+    # and sort put them in order, too
+    assert bottom_of(o.get(0)).value().base16() == "00"

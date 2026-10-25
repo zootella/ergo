@@ -288,9 +288,10 @@ def test_fuzz_outline_readers() -> None:
         d = mutated_data(o.data())
         try:
             from_data = data_to_outline(d)
-            assert from_data.data().base16() == d.base16(), d.base16()
         except ValueError:
             refused += 1  # refused, which is fine; the property is about what it takes
+        else:
+            assert from_data.data().base16() == d.base16(), d.base16()
 
         # the text reader is lenient, but whatever text it takes, it writes back as text that reads to the same outline
         s = mutated_text(o.text())

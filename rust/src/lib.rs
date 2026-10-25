@@ -2143,7 +2143,7 @@ fn finish(status: &mut HashStatus) {
 // MessagePack (Furuhashi, 2008), CBOR (RFC 7049, 2013), and Protocol Buffers (Google, 2008) solve a different problem. They are general-purpose serialization formats with rich type systems — integers, floats, strings, arrays, maps, booleans, nulls, extension types. Powerful, but more complex than needed when all your values are just bytes. Protobuf additionally requires schema files compiled ahead of time. Outline is deliberately simpler.
 //
 // Outline has two serialization formats:
-// - Text: indented lines like «name:"value"0a» using quoted encoding with data_to_quoted(). Visible in source code as raw string literals, explains itself in markdown documentation, diffs alongside code in version control. The parser is lenient about indentation width (2 spaces, 4 spaces, tabs), accepts trailing whitespace, blank lines, and # comments at the end of a line or on a line of their own, and takes contents in any order, so pasted or hand-edited text tolerates reasonable sloppiness. The writer is canonical, sorted at every level.
+// - Text: indented lines like «name:"value"0a» using quoted encoding with data_to_quoted(). Visible in source code as raw string literals, explains itself in markdown documentation, diffs alongside code in version control. The parser is lenient about indentation width (2 spaces, 4 spaces, tabs), accepts trailing spaces and tabs, blank lines, and # comments at the end of a line or on a line of their own, and takes contents in any order, so pasted or hand-edited text tolerates reasonable sloppiness. The writer is canonical, sorted at every level.
 // - Binary: span-prefixed length encoding (name size, name, value size, value, contents size, contents) with no delimiters or escaping. Compact and unambiguous — data stays the same size on the wire, unlike JSON which inflates binary with escape sequences. Strict, too: the reader takes only what the writer writes, sorted at every level.
 //
 // One value type (bytes), one tree structure, deterministic sort, a text form and a binary form. It runs anywhere Rust does, with no dependencies, no schema files, and no build step.
@@ -2178,7 +2178,7 @@ pub fn check_outline_name(s: &str) -> &str {
     s
 }
 
-/// The value of an outline without one: a Data of no bytes, the same one for all of them, made on first use, so a program that never makes an outline never makes it.
+/// The value of an outline made or cleared without one: a Data of no bytes, the same one for all of them, made on first use, so a program that never makes an outline never makes it. A reader can give an outline an empty Data of its own, which is no value just the same.
 fn no_value() -> Data {
     static EMPTY: std::sync::OnceLock<Data> = std::sync::OnceLock::new();
     EMPTY.get_or_init(|| Data::from(Vec::new())).clone()
@@ -2203,7 +2203,7 @@ pub struct Outline {
 }
 
 impl Outline {
-    /// An outline with a name, or none with `""`, and then contents added to it.
+    /// An outline with a name, or none with `""`, ready for contents.
     ///
     /// # Panics
     ///
@@ -2372,7 +2372,7 @@ impl Outline {
         self.contents = Vec::new();
     }
 
-    /// Sort all nested contents, at every level, so identical information produces identical serialization.
+    /// Sort the contents at every level into the order the writers use, for when the order an outline holds matters, like reading it with [`get`](Outline::get); the writers sort a copy of their own, so writing never needs this first.
     pub fn sort(&mut self) {
         // sort with a stack of our own, of outlines taken out of the outline above them, each with the contents it has yet to sort and the ones it has, rather than calling ourselves for each level down
         struct Frame {
@@ -2402,15 +2402,15 @@ impl Outline {
         }
     }
 
-    /// The outline as indented lines of text, its text serialization, visible in source and documentation.
+    /// The outline as indented lines of text, its text serialization, visible in source and documentation, sorted at every level from a copy, so this outline stays as it is.
     pub fn text(&self) -> String {
         outline_to_text(self)
     }
-    /// The outline as bytes, its binary serialization, compact on the wire.
+    /// The outline as bytes, its binary serialization, compact on the wire, sorted the same way.
     ///
     /// # Panics
     ///
-    /// Panics if the bytes would pass the span's cap of about 256 MB.
+    /// Panics if a name, a value, or contents would pass the span's cap of about 256 MB.
     pub fn data(&self) -> Data {
         outline_to_data(self)
     }
@@ -2487,7 +2487,7 @@ fn outline_to_text(o: &Outline) -> String {
     s
 }
 
-/// Parse a text outline into its object form, or an [`OutlineError`] because the text isn't one. It reads leniently, the way the essay above it in the source describes, for text a person or an agent wrote by hand.
+/// Parse a text outline into an [`Outline`], or an [`OutlineError`] because the text isn't one. It reads leniently, for text a person or an agent wrote by hand: any indent, as long as an outline's contents share one, blank lines, `#` comments at the end of a line or on a line of their own, and contents in any order, which it keeps.
 ///
 /// ```
 /// let o = zootella_ergo::text_to_outline("orchard:\n  tree:\"apple\"  # a comment\n").unwrap();
@@ -2599,7 +2599,7 @@ fn outline_to_data(o: &Outline) -> Data {
     // first pass: measure the exact size we'll need, so we can allocate one buffer and write into it
     let mut contents_sizes: std::collections::HashMap<*const Outline, usize> =
         std::collections::HashMap::new(); // each outline's contents size, measured on the way out of it, so the second pass looks it up in O(1) instead of recomputing
-    let mut measured: Vec<usize> = Vec::new(); // at each depth, the bytes measured so far of the contents of the outline the walk is in there
+    let mut measured: Vec<usize> = Vec::new(); // at each depth, the bytes measured so far of the contents of the outline at that depth
     let mut total = 0;
     walk(&o, |step| match step {
         Step::Enter(_, depth) => {
@@ -2607,7 +2607,7 @@ fn outline_to_data(o: &Outline) -> Data {
             measured.push(0);
         }
         Step::Leave(x, depth) => {
-            let name_bytes = x.name.len(); // names are [a-z0-9], so string length equals utf-8 byte count
+            let name_bytes = x.name.len(); // len counts a string's bytes
             let value_bytes = x.value.size();
             let contents_bytes = measured[depth]; // every outline in x's contents has been measured, since the walk leaves x after them
             contents_sizes.insert(std::ptr::from_ref(x), contents_bytes);
@@ -2639,7 +2639,7 @@ fn outline_to_data(o: &Outline) -> Data {
     Data::from(buffer)
 }
 
-/// Parse binary data into an outline object, or an [`OutlineError`] because the bytes aren't exactly what [`Outline::data`] writes. It's strict, the way the essay above it in the source describes, for bytes from the wire.
+/// Parse bytes into an [`Outline`], or an [`OutlineError`] because they aren't exactly what [`Outline::data`] writes: contents sorted at every level, every span in its shortest form, and nothing after. It's strict, for bytes from the wire, and a program reading from the wire caps how many bytes it accepts first.
 ///
 /// ```
 /// use zootella_ergo::{Data, Outline, data_to_outline};
@@ -2662,11 +2662,12 @@ pub fn data_to_outline(d: &Data) -> Result<Outline, OutlineError> {
         if r.w != end {
             return Err(OutlineError(
                 "an outline's contents ran past their size".to_string(),
-            )); // overran or underran the contents region, input is malformed
+            )); // overran the contents region, since a reader short of the end goes on to the next outline inside, so the input is malformed
         }
 
         // top is whole, its contents all parsed, so now it can be compared and added to the outline above it
-        let (top, _) = open.pop().expect("the outline being parsed");
+        let (mut top, _) = open.pop().expect("the outline being parsed");
+        top.contents.shrink_to_fit(); // hold no more room than its contents fill, now that they're all here, since a vector grows in steps and a deep outline would keep the spare room at every level
         let Some((parent, _)) = open.last_mut() else {
             break top; // top is the root
         };
@@ -2790,7 +2791,7 @@ fn sorted_copy(o: &Outline) -> Outline {
     root.expect("the root, which the walk leaves last")
 }
 
-/// Compare two outlines for sort order: name first, then value, then nested contents pairwise down the whole tree.
+/// Compare two outlines for sort order: name first, then value, then nested contents pairwise down the whole tree; pairwise gives the canonical order only when the levels below are already in it, so every caller sorts or checks them first.
 fn outline_compare(o1: &Outline, o2: &Outline) -> std::cmp::Ordering {
     use std::cmp::Ordering::Equal;
     let c = outline_compare_here(o1, o2);
@@ -2843,7 +2844,7 @@ fn outline_compare_here(o1: &Outline, o2: &Outline) -> std::cmp::Ordering {
 
 // Span: a variable-length integer encoding for size prefixes in the binary format. Each byte contributes 7 bits of value; the high bit is 1 to continue, 0 to stop. Least-significant byte first (little-endian), matching LEB128 (WebAssembly, DWARF debug info) and Protocol Buffers' varint. Capped at 4 bytes (28 bits), giving a maximum value of 268,435,455 — about 256 MB. Outlines are designed to be small packets, not bulk storage, so this ceiling is generous. An Outline that approaches this size is almost certainly a misuse.
 //
-// The size of an outline's contents is a span too, the root's included, so the cap bounds an outline's whole binary form at about 256 MB: the writer refuses an outline whose bytes would pass it, and no span can tell the reader to expect more. That's still more than a program should take from outside. An outline takes as few as 3 bytes in its binary form and about 72 in memory, so reading bytes can take more than 20 times their size, and when Rust can't get the memory it asks for, it aborts the process, which nothing can catch. So a program that reads outlines from the wire caps how many bytes it accepts before it hands them to data_to_outline, the way a server caps the size of a request body.
+// An outline's name, its value, and its contents each come after a span of their size, the root's included, so the cap holds each of them to about 256 MB: the writer refuses an outline with a name, a value, or contents past it, and no span can tell the reader to expect more, though the root's three together can come to about three times that. That's still more than a program should take from outside. An outline takes as few as 3 bytes in its binary form and about 72 in memory, so reading bytes can take more than 20 times their size, and when Rust can't get the memory it asks for, it aborts the process, which nothing can catch. So a program that reads outlines from the wire caps how many bytes it accepts before it hands them to data_to_outline, the way a server caps the size of a request body.
 
 /// What [`span_decode`] reads: the size the span says, and how many bytes the span took, so a reader can move past it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
