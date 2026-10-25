@@ -144,7 +144,7 @@ function mulberryData(seed, length) {
 if (process.argv[1] == new URL(import.meta.url).pathname) {
   //started as a program rather than imported: serve requests until stdin closes
   for await (let line of createInterface({ input: process.stdin })) {
-    let request = JSON.parse(line)
+    let request = JSON.parse(line) //outside the top gate: a line the driver can't read is a bug in the harness, not a call to refuse, so it stops loudly
     let response = { id: request.id }
     try {
       response.result = await call(request.call, request.args)

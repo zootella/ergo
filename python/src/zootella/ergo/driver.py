@@ -345,6 +345,7 @@ def call(name: str, args: list) -> object:
 def main() -> None:
     """Serve requests until stdin closes."""
     for line in sys.stdin:
+        # outside the top gate: a line the driver can't read is a bug in the harness, not a call to refuse, so it stops loudly
         request = json.loads(line)
         response = {"id": request.get("id")}
         try:
