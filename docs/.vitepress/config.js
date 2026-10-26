@@ -4,8 +4,8 @@ import { tabsMarkdownPlugin } from 'vitepress-plugin-tabs'
 export default defineConfig({
   title: 'ergo',
   description: 'Simple helper functions, the same in JavaScript, Python, Rust, and Go.',
-  base: '/ergo/', //for now the site is published at zootella.github.io/ergo; when dns for zootella.com points at github pages, this becomes '/' and docs/public/CNAME returns with the domain in it; construction.md has the steps
-  sitemap: { hostname: 'https://zootella.github.io/ergo' },
+  sitemap: { hostname: 'https://zootella.com' }, //the site is at zootella.com, the root of this repository's custom domain, so it keeps vitepress's default base of '/'; construction.md has how the domain is set up
+  cleanUrls: true, //links without .html, like /tick, which github pages answers with tick.html
   markdown: {
     config(md) {
       md.use(tabsMarkdownPlugin) //tabs that sync by key, so choosing rust on one example chooses it everywhere on the page
