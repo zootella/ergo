@@ -52,7 +52,7 @@
 
 /* the home page, docs/index.md, writes what the default theme's hero would draw as blocks of markdown instead, so they go in any order: a line like "ergo {.home-name}" is a paragraph with that class, and each class here gives its block the hero's size and the room above it, while the page itself starts right at the nav bar */
 .vp-doc .home-group {
-  margin: 24px 0; /* a group of lines keeps them together, with room above and below it: 24 pixels on a phone and 48 from 640 */
+  margin: 24px 0; /* a group of lines keeps them together, with room above and below it: 24 pixels on a phone and 42 from 640 */
 }
 
 .vp-doc .home-name,
@@ -84,7 +84,7 @@
 
 @media (min-width: 640px) {
   .vp-doc .home-group {
-    margin: 48px 0;
+    margin: 42px 0;
   }
 
   .vp-doc .home-name,
