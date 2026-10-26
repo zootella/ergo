@@ -27,3 +27,98 @@
   --vp-c-bg-soft: #2d2621;
   --vp-c-bg-elv: #2d2621;
 }
+
+/* the home page's own colors: its frontmatter's pageClass puts "home-page" on the layout while it's showing, a name vitepress itself never uses, and :has lets the root see that, since vitepress paints the background on body and works out the nav bar's color at the root, both from --vp-c-bg */
+:root:has(.home-page) {
+  --vp-c-bg: #ffffff;
+}
+
+:root.dark:has(.home-page) {
+  --vp-c-bg: #000000;
+}
+
+/* the header on the home page: config.js wraps parts of the site title and the nav link in spans, so the home page leaves the upper left empty and reads "zootella ergo" in the upper right */
+.nav-zootella {
+  display: none;
+}
+
+:root:has(.home-page) .nav-zootella {
+  display: inline;
+}
+
+:root:has(.home-page) a:has(.site-title) {
+  visibility: hidden; /* the link around the site title, rather than just its text, so the home page has no empty link to tab to */
+}
+
+/* the home page, docs/index.md, writes what the default theme's hero would draw as blocks of markdown instead, so they go in any order: a line like "ergo {.home-name}" is a paragraph with that class, and each class here gives its block the hero's size and the room above it, while the page itself starts right at the nav bar */
+.vp-doc .home-group {
+  margin: 24px 0; /* a group of lines keeps them together, with room above and below it: 24 pixels on a phone and 48 from 640 */
+}
+
+.vp-doc .home-name,
+.vp-doc .home-text {
+  margin: 0;
+  letter-spacing: -0.4px;
+  line-height: 40px;
+  font-size: 32px;
+  font-weight: 700;
+}
+
+.vp-doc .home-name {
+  color: var(--vp-home-hero-name-color);
+}
+
+.vp-doc .home-tagline {
+  margin: 8px 0 0;
+  line-height: 28px;
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--vp-c-text-2);
+}
+
+.vp-doc .home-disc {
+  display: block;
+  width: 192px;
+  height: 192px;
+}
+
+@media (min-width: 640px) {
+  .vp-doc .home-group {
+    margin: 48px 0;
+  }
+
+  .vp-doc .home-name,
+  .vp-doc .home-text {
+    line-height: 56px;
+    font-size: 48px;
+  }
+
+  .vp-doc .home-tagline {
+    margin-top: 12px;
+    line-height: 32px;
+    font-size: 20px;
+  }
+
+  .vp-doc .home-disc {
+    width: 256px;
+    height: 256px;
+  }
+}
+
+@media (min-width: 960px) {
+  .vp-doc .home-name,
+  .vp-doc .home-text {
+    line-height: 64px;
+    font-size: 56px;
+  }
+
+  .vp-doc .home-tagline {
+    line-height: 36px;
+    font-size: 24px;
+  }
+
+  .vp-doc .home-disc {
+    width: 320px;
+    height: 320px;
+  }
+}

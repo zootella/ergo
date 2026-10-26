@@ -2,7 +2,7 @@ import { defineConfig } from 'vitepress'
 import { tabsMarkdownPlugin } from 'vitepress-plugin-tabs'
 
 export default defineConfig({
-  title: 'ergo',
+  title: 'zootella ergo', //after each page's title in the browser tab, like "Tick | zootella ergo"
   description: 'Simple helper functions, the same in JavaScript, Python, Rust, and Go.',
   sitemap: { hostname: 'https://zootella.com' }, //the site is at zootella.com, the root of this repository's custom domain, so it keeps vitepress's default base of '/'; construction.md has how the domain is set up
   cleanUrls: true, //links without .html, like /tick, which github pages answers with tick.html
@@ -12,7 +12,8 @@ export default defineConfig({
     },
   },
   themeConfig: {
-    nav: [{ text: 'Functions', link: '/int' }],
+    siteTitle: '<span class="site-title">zootella</span>', //the header's upper left, which links home, and which custom.css hides on the home page
+    nav: [{ text: '<span class="nav-zootella">zootella </span>ergo', link: '/int' }], //the header's upper right, into the documentation, which reads "zootella ergo" on the home page and "ergo" everywhere else
     sidebar: [
       {
         text: 'Functions',

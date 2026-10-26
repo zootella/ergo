@@ -90,7 +90,7 @@ ergo/
 	python/                        pyproject.toml, src/zootella/ergo/__init__.py and driver.py, tests/test_vectors.py
 	rust/                          Cargo.toml, src/lib.rs, src/driver.rs, src/bin/driver.rs, tests/vectors.rs, examples/ with one file per page of the site
 	go/                            go.mod, ergo.go, ergo_test.go, example_test.go, internal/dispatch/, cmd/driver/
-	docs/                          the VitePress site: .vitepress/config.js and theme/, index.md, one page per function family
+	docs/                          the VitePress site: .vitepress/config.js and theme/, index.md, one page per function family, and public/ for files served as they are, like the home page's disc
 ```
 
 Each edition directory also holds its own README.md, the short one its registry shows, and a copy of LICENSE, because npm, PyPI, crates.io, and pkg.go.dev each look for one inside the package.
