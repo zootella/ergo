@@ -1,0 +1,35 @@
+{
+	"lineWidth": 120,
+	"useTabs": true,
+	"indentWidth": 2,
+	"typescript": {
+		"maxBlankLines": 24,
+		"operatorPosition": "sameLine",
+		"semicolons": "asi",
+		"quoteStyle": "preferSingle",
+		"quoteProps": "asNeeded",
+		"arrowFunction.useParentheses": "preferNone",
+		"spaceSurroundingProperties": false,
+		"importDeclaration.spaceSurroundingNamedImports": false,
+		"exportDeclaration.spaceSurroundingNamedExports": false,
+		"module.sortImportDeclarations": "maintain",
+		"module.sortExportDeclarations": "maintain",
+		"importDeclaration.sortNamedImports": "maintain",
+		"exportDeclaration.sortNamedExports": "maintain"
+	},
+	"malva": {
+		"quotes": "preferSingle"
+	},
+	"excludes": [
+		"**/node_modules",
+		"**/*-lock.json",
+		"**/*.md",
+		"**/*.json",
+		"**/*.yaml",
+		"**/*.yml"
+	],
+	"plugins": [
+		"npm:@dprint/typescript@0.101.0",
+		"npm:dprint-plugin-malva@0.16.0"
+	]
+}

@@ -1,7 +1,7 @@
 {
   "recommendations": [
-    "esbenp.prettier-vscode",
-    "dbaeumer.vscode-eslint",
+    "dprint.dprint",
+    "oxc.oxc-vscode",
     "charliermarsh.ruff",
     "rust-lang.rust-analyzer",
     "golang.go",

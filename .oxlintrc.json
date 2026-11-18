@@ -1,0 +1,10 @@
+{
+	"env": {"browser": true, "node": true},
+	"rules": {
+		"curly": ["warn", "multi-line"],
+		"no-undef": "warn",
+		"no-var": "warn",
+		"no-nested-ternary": "warn",
+		"no-unused-vars": "off"
+	}
+}

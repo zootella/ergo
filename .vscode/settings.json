@@ -1,7 +1,7 @@
 {
   "editor.formatOnSave": true,
-  "[javascript]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
-  "[json]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+  "[javascript]": { "editor.defaultFormatter": "dprint.dprint" },
+  "[css]": { "editor.defaultFormatter": "dprint.dprint" },
   "[python]": { "editor.defaultFormatter": "charliermarsh.ruff" },
   "[rust]": { "editor.defaultFormatter": "rust-lang.rust-analyzer" },
   "[go]": { "editor.defaultFormatter": "golang.go" }

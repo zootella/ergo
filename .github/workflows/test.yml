@@ -58,6 +58,4 @@ jobs:
         working-directory: javascript
         run: |
           pnpm install --frozen-lockfile
-          pnpm lint
-          pnpm exec prettier --check ../release.js # release.js belongs to no edition, and the configuration at the root formats it the same way
-          pnpm test
+          pnpm test # Checks the format and lint of every JavaScript file in the repository, release.js and the site's included, then runs the suite.
