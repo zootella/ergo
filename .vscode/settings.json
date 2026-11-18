@@ -1,8 +1,8 @@
 {
-  "editor.formatOnSave": true,
-  "[javascript]": { "editor.defaultFormatter": "dprint.dprint" },
-  "[css]": { "editor.defaultFormatter": "dprint.dprint" },
-  "[python]": { "editor.defaultFormatter": "charliermarsh.ruff" },
-  "[rust]": { "editor.defaultFormatter": "rust-lang.rust-analyzer" },
-  "[go]": { "editor.defaultFormatter": "golang.go" }
+  "editor.formatOnSave": false,
+  "[javascript]": { "editor.formatOnSave": true, "editor.defaultFormatter": "dprint.dprint" },
+  "[css]": { "editor.formatOnSave": true, "editor.defaultFormatter": "dprint.dprint" },
+  "[python]": { "editor.formatOnSave": true, "editor.defaultFormatter": "charliermarsh.ruff" },
+  "[rust]": { "editor.formatOnSave": true, "editor.defaultFormatter": "rust-lang.rust-analyzer" },
+  "[go]": { "editor.formatOnSave": true, "editor.defaultFormatter": "golang.go" }
 }

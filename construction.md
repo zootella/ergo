@@ -80,10 +80,11 @@ One repository, github.com/zootella/ergo, holding all four editions:
 
 ```
 ergo/
-	CLAUDE.md  concept.md  construction.md  ideas.md  quad-style.md  README.md  LICENSE
+	CLAUDE.md  concept.md  construction.md  format-and-lint.md  ideas.md  quad-style.md  README.md  LICENSE
 	release.js  package.json       one command that releases all four editions at a new version, run as pnpm release
 	.editorconfig  .vscode/        indentation per language, format on save, recommended extensions
-	.prettierrc                    the Prettier configuration, for the JavaScript edition, release.js, and the site
+	dprint.json  .oxlintrc.json    the formatter and linter configuration, for the JavaScript edition, release.js, and the site
+	.git-blame-ignore-revs         the commits that changed only layout, which blame looks past
 	.github/workflows/             test.yml runs all four editions and the suite; publish.yml releases on a version tag; docs.yml deploys the site
 	tests/                         the shared json vectors, one file per function family, belonging to no edition
 	javascript/                    package.json, ergo.js, driver.js, editions.js, ergo.test.js (the vitest suite that drives all four)
@@ -99,26 +100,16 @@ Directory names are full words, following the style guide's rule against abbrevi
 
 ## Format and lint
 
-Style is not format; concept.md has the reasoning. quad-style.md governs structure, names, comments, and factoring in every edition, and leaves format to each language's standard formatter. Formatters run on save in the editor and are checked in CI, so an unformatted file fails the build. Linters are kept to each ecosystem's recommended rule set, the one that catches real mistakes, and no opinionated presets. The acceptance test: a mid-career engineer with years in one of the four languages looks at their edition, runs their regular linter against it, and things are fine.
+Style is not format; concept.md has the reasoning. quad-style.md governs structure, names, comments, and factoring in every edition, and leaves format to a formatter: dprint in JavaScript, and in the other three, each language's standard formatter as it ships. Linters run each ecosystem's recommended rules, the ones that catch real mistakes, with no opinionated presets. CI checks both, so an unformatted file or a lint warning fails the build. The acceptance test: a mid-career engineer with years in one of the four languages looks at their edition, runs their regular linter against it, and things are fine.
 
 | | Formatter | Linter | CI check |
 |---|---|---|---|
-| JavaScript | Prettier | ESLint, `recommended` rules only | `prettier --check .` and `eslint .` |
-| Python | Ruff | Ruff | `ruff format --check` and `ruff check` |
-| Rust | rustfmt | Clippy | `cargo fmt --check` and `cargo clippy` |
+| JavaScript | dprint | oxlint | `pnpm test`, which runs `dprint check` and `oxlint --deny-warnings` before the suite |
+| Python | Ruff | Ruff | `ruff format --check .` and `ruff check .` |
+| Rust | rustfmt | Clippy | `cargo fmt --check` and `cargo clippy --all-targets --features driver -- -D warnings` |
 | Go | gofmt | `go vet` | `gofmt -l .` prints nothing, and `go vet ./...` |
 
-**JavaScript.** Prettier is the formatter the whole ecosystem recognizes; Biome is the fast newer alternative that does both jobs and is also respectable. Configuration stays minimal, because the point of Prettier is that there's nothing to argue about. The one proposal: `semi: false` and `singleQuote: true`, which is the configuration Vite and Vitest use for their own code, keeps two of quad-style.md's choices, and is as mainstream as the defaults. Everything else is default: two-space indentation, wrapping at 80 columns, trailing commas. ESLint runs with its `recommended` rule set and nothing more. That set does not include `eqeqeq` or `prefer-const`, so quad-style.md's reserved signals, `let` by default and `==` by default, survive; only opinionated presets like Airbnb forbid them.
-
-**Python.** Ruff replaced Black, flake8, and isort as the one tool; `ruff format` produces Black's output. Four-space indentation, 88 columns, PEP 8.
-
-**Rust.** rustfmt and Clippy ship with the toolchain and need no configuration. Four-space indentation, 100 columns.
-
-**Go.** gofmt is mandatory and unconfigurable: tabs, no line length. Of the four it is the friendliest to the layout of the original, the JavaScript ergo grew from, since it never wraps a line and it aligns trailing comments on consecutive lines itself. `go vet` ships with the toolchain; staticcheck is the popular third-party addition and can come later.
-
-**What survives from the original's layout, and what doesn't.** Comment placement and voice survive everywhere, since formatters don't touch comment contents and keep trailing comments on their line. Single quotes, no semicolons, trailing commas, and a short guard like `if (!row) return false` on one line survive in JavaScript. Tabs give way to each language's indentation, except in Go. Vertical alignment across lines gives way, except in Go. Two statements in a one-line block, and `{key: 'value'}` without inner spaces, give way. Where alignment genuinely carries information, like a table of test vectors or the base62 alphabet with its caret diagram, every formatter has a standard escape hatch for one block: `// prettier-ignore`, `# fmt: off` and `# fmt: on`, `#[rustfmt::skip]`. Used sparingly, those are recognized and accepted.
-
-**Editor.** A `.editorconfig` at the root sets each language's indentation and final newlines, which every editor reads before any tool runs. A committed `.vscode/settings.json` turns on format on save and names the formatter per language, which is normal in a multi-language repository.
+format-and-lint.md has the rest: why JavaScript's two tools were chosen, every setting in dprint.json and .oxlintrc.json and its reason, how each rule of quad-style.md lands in a setting, the escape hatches, the commands, and why dprint doesn't format the other three.
 
 ## Tests
 
@@ -181,7 +172,7 @@ The manifest is package.json. The fields that signal a well-made library:
 - `"sideEffects": false`, so bundlers can drop unused functions. This is only true once tests are out of the source file, and it has a second half inside the file: every top-level statement has to be something a bundler can prove harmless. A function declaration, a class declaration with nothing static, a regex, an array, or a frozen object literal is. Building an object property by property and then freezing it is not, and Rollup kept the whole Time namespace in a bundle that imported only `saySize4` until the namespaces became literals. The `/*#__PURE__*/` annotation on the `Object.freeze` call is the standard mark that esbuild and webpack need and Rollup doesn't, and the values inside have to be plain numbers: esbuild folds `1024 ** 2` but not `60 * 1000`, and won't drop a literal holding an expression it didn't fold, since a multiplication could in principle call a getter. With both, a page that imports one function carries that function and nothing else, which was checked by bundling a one-function import with Rollup and with esbuild and reading what survived, and checked again with Rollup, esbuild, and rolldown when Data became a class. The rule for every future addition: no top-level statement that does anything, only declarations, with the numbers written out and the vectors pinning them.
 - `"engines": {"node": ">=22"}`. Node 20 reached end of life in April 2026.
 - `license`, `repository`, `description`, and `keywords`. If the repository holds four languages, `repository.directory` points at the JavaScript one.
-- One dependency, `@noble/hashes`, for what Web Crypto can't do: SHA-1 and SHA-256 a piece at a time, and BLAKE3. `sha1` and `sha256` all at once are Web Crypto, at native speed and from a promise, so `blake3` returns a promise too; the hash section of ergo.js says why, and the shared vectors and the cross-edition fuzz test hold noble and Web Crypto alike to the other editions' answers. noble's `sideEffects: false` keeps the guarantee above: bundling a page that imports `saySize4` alone carries that function and nothing else, one that imports `sha256` alone carries Data, which every hash takes and answers, and a call to Web Crypto, about 2 KB gzipped and nothing of noble's, and one that imports `blake3` alone carries Data and noble's BLAKE3 and nothing else, about 6 KB, checked with Vite. The `devDependencies` are vitest, eslint, and prettier, and nothing of theirs reaches the package.
+- One dependency, `@noble/hashes`, for what Web Crypto can't do: SHA-1 and SHA-256 a piece at a time, and BLAKE3. `sha1` and `sha256` all at once are Web Crypto, at native speed and from a promise, so `blake3` returns a promise too; the hash section of ergo.js says why, and the shared vectors and the cross-edition fuzz test hold noble and Web Crypto alike to the other editions' answers. noble's `sideEffects: false` keeps the guarantee above: bundling a page that imports `saySize4` alone carries that function and nothing else, one that imports `sha256` alone carries Data, which every hash takes and answers, and a call to Web Crypto, about 2 KB gzipped and nothing of noble's, and one that imports `blake3` alone carries Data and noble's BLAKE3 and nothing else, about 6 KB, checked with Vite. The `devDependencies` are vitest, dprint, and oxlint, and nothing of theirs reaches the package.
 
 Layout is flat: package.json, README.md, LICENSE, ergo.js, and the vitest suite beside it. The `src` and `dist` convention is for compiled libraries.
 

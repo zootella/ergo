@@ -194,7 +194,6 @@ function saveNote(title: Text, count: Min1) {
 
 And here is what Node actually runs, from its own stripper, with each annotation turned into spaces and everything else left where it was:
 
-<!-- prettier-ignore -->
 ```js
 function door(text        ) {
   let body                          = JSON.parse(text) //every field is unknown until checked

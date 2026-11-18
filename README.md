@@ -40,6 +40,15 @@ cd rust && ERGO_FUZZ=4 cargo test --release --test fuzz -- --nocapture
 cd go && ERGO_FUZZ=4 go test -run Fuzz -v
 ```
 
+Each edition is formatted and linted by its own tools, and CI checks both. In JavaScript, `pnpm fix` applies oxlint's safe fixes and formats with dprint, and `pnpm test` checks the format and the lint before it runs the suite. `format-and-lint.md` has every setting and why.
+
+```
+cd javascript && pnpm fix
+cd python && uv run ruff format . && uv run ruff check .
+cd rust && cargo fmt && cargo clippy --all-targets --features driver -- -D warnings
+cd go && gofmt -w . && go vet ./...
+```
+
 ## Releasing
 
 Most commits don't need a release. Release when there's finished work you want other projects to be able to install: commit as usual, then run one command from the repository root, on main.
