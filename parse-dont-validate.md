@@ -1,6 +1,6 @@
 # parse, don't validate
 
-Notes on a pattern ergo's has and check pairs are reaching for, written in October 2026 to return to later. Nothing here is in ergo yet. It records the idea, where it comes from, how far each of ergo's four languages can take it, and what adopting it would cost.
+Notes on a pattern ergo's has and check pairs are reaching for, written in October 2026 to return to later. Nothing here is in ergo yet. It records the idea, where it comes from, how far each of ergo's four languages can take it, and what adopting it would cost. typescript.md, from November 2026, follows the TypeScript part to its end with an experiment, and decides against it.
 
 ## The wish
 
@@ -139,6 +139,8 @@ export function tickToIso(t: Tick): string // a caller can't hand it an unchecke
 ```
 
 The value stays a string or a number, so nothing about the JavaScript changes. This fits a plan construction.md already has: a hand-written `ergo.d.ts` beside ergo.js. ergo.js would stay plain JavaScript, TypeScript users would get the brands, and plain JavaScript users in VS Code would get most of it in their editor hints.
+
+typescript.md tried this and found the limit that decides it. An annotation never runs a check, so past the checker, a cast, an `any`, or a run that skipped the checker reaches a function unguarded, where the runtime guard it replaced would have refused. So ergo keeps its guards.
 
 ## What it buys: the preamble, gone
 
