@@ -25,7 +25,7 @@ saySize4(123456789) // "117 MB": four digits or less, with a unit
 let deadline = Date.now() + 2 * Time.hour // two hours from now, in milliseconds
 tickToText(deadline) // "2026oct15.2041.7125", a tick's short exact text
 tickToIso(deadline) // "2026-10-15T20:41:07.125Z", the same tick's iso text
-let d = Data({ text: 'hello' }) // bytes, which read out as base16, base32, base62, base64, or text
+let d = Data({text: 'hello'}) // bytes, which read out as base16, base32, base62, base64, or text
 ;(await sha256(d)).base32() // the SHA-256 hash, as a Data, out in any form; sha1 and blake3 work the same way
 let o = Outline('orchard') // an outline, a tree of names and values of bytes
 o.m('basket').m('note').value(d) // m makes as it navigates, so a chain builds as it goes

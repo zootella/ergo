@@ -11,7 +11,7 @@ How ergo's four editions are formatted and linted: which tools, every setting an
 | Rust | rustfmt | Clippy | their defaults | `cargo fmt --check` and `cargo clippy --all-targets --features driver -- -D warnings` |
 | Go | gofmt | `go vet` | none, since gofmt has none | `gofmt -l .` prints nothing, and `go vet ./...` |
 
-Python, Rust, and Go each have one standard formatter, and ergo runs each as it ships. A Python engineer expects Ruff, which replaced Black, flake8, and isort as the one tool, with Black's output, four-space indentation, and 88 columns. A Rust engineer expects rustfmt and Clippy, which ship with the toolchain, with four spaces and 100 columns. A Go engineer expects gofmt, which is mandatory and unconfigurable, with tabs and no line length; `go vet` ships with the toolchain, and staticcheck, the popular addition, can come later. Of the three, gofmt is the friendliest to the layout of the original, the JavaScript ergo grew from, since it never wraps a line and it aligns trailing comments on neighboring lines itself.
+Python, Rust, and Go each have one standard formatter, and ergo runs each as it ships. A Python engineer expects Ruff, which replaced Black, flake8, and isort as the one tool, with Black's output, four-space indentation, and 88 columns. A Rust engineer expects rustfmt and Clippy, which ship with the toolchain, with four spaces and 100 columns. A Go engineer expects gofmt, which is mandatory and unconfigurable, with tabs and no line length; `go vet` ships with the toolchain. Of the three, gofmt is the friendliest to the layout of the original, the JavaScript ergo grew from, since it never wraps a line and it aligns trailing comments on neighboring lines itself.
 
 JavaScript has no such answer, so it took a spike to choose one.
 
@@ -36,7 +36,7 @@ Biome and the incumbent fell behind. Biome's formatter leaves the most misleadin
 
 The working rule through all of it: give up the letter of how the code looked before, freely; prefer the tool's default; and depart from a default only to defend the spirit of the style guide, with a setting an experienced JavaScript engineer would recognize from real projects. A setting justified only by "that's how it looked" didn't survive. Two ways to fail were in view the whole time. One is taking every default of the newest tool and losing what the original found on its own, which is tight, expressive, and clean. The other is stacking up settings until a formatter technically runs but the code looks unlike anything an experienced engineer has seen.
 
-The settings are chosen for icarus as well, and kept the same in both, apart from what each project's own files need, like its paths and the plugins for its file types. So code moves between the two projects without reformatting, and a setting stays even where ergo's own code doesn't need it today, like `no-unused-vars` left off.
+The settings are chosen for icarus as well, and kept the same in both, apart from what each project's own files need, like its paths and the files it generates. So code moves between the two projects without reformatting, and a setting stays even where ergo's own code doesn't need it today, like `no-unused-vars` left off.
 
 ## Two lenses
 
@@ -57,9 +57,9 @@ How each rule of the style guide that a tool can see is kept, and which rules no
 | Width is for code, and a comment at the end of a line never breaks the code in front of it | dprint `lineWidth: 120`, rustfmt, gofmt | none of the three counts a trailing comment toward the width. Ruff does, which is why quad-style.md moves a comment that would pass 88 columns onto the line above |
 | No semicolons in JavaScript | dprint `semicolons: asi` | a guarding `;` goes in front of a line that starts with `(`, `[`, or a backtick, and nowhere else |
 | Single quotes, and backticks to interpolate | dprint `quoteStyle: preferSingle` | double quotes only where a string holds a single quote; backtick strings are never touched |
-| A short guard on one line, `if (!row) return false` | dprint's `singleBodyPosition: maintain` and `useBraces: whenNotSingleLine`, oxlint `curly: multi-line` | a braceless body stays on its `if` line as written; one that has to leave the line gets braces from the formatter, so the misleading shape, a lone body on the line below, never appears; the lint rule states the same thing where readers look for rules |
+| A short guard on one line, `if (!row) return false` | dprint's `singleBodyPosition: maintain` and `useBraces: whenNotSingleLine`, oxlint `curly: multi-line` | a body on its `if` line stays there without braces, and a body on its own line gets braces from the formatter, so the misleading shape, a lone body on the line below, never appears; the lint rule states the same thing where readers look for rules |
 | Comments at the end of the line they're about | dprint | trailing comments stay where they are, and a comment after an opening brace, `function f() { // note`, stays on that line |
-| One space before the comment marker and one after | dprint `commentLine.forceSpaceAfterSlashes` in JavaScript, and Ruff in Python | `x // note` in JavaScript and `x  # note` in Python, with the two spaces Ruff sets; in Rust and Go, `x // note` is the convention, and neither formatter changes a comment's text |
+| A space before the comment marker and one after | dprint `commentLine.forceSpaceAfterSlashes` in JavaScript, and Ruff in Python | `x // note` in JavaScript, exactly one space on each side, and `x  # note` in Python, with the two spaces Ruff sets before the marker; in Rust and Go, `x // note` is the convention, neither formatter changes a comment's text, and gofmt pads trailing comments on neighboring lines so they line up |
 | What comments say, and their capitals | no tool | the style guide's alone |
 | Tight braces for data, `{text: s}`, distinct from a block | dprint `spaceSurroundingProperties: false` and the two named-import and export settings | objects, destructuring, imports, and exports all read alike; a block is always on several lines, so spaced braces never mean data |
 | A lone arrow parameter bare, `x => f(x)` | dprint `arrowFunction.useParentheses: preferNone` | |
@@ -68,7 +68,7 @@ How each rule of the style guide that a tool can see is kept, and which rules no
 | Ternaries flat and simple, never nested | oxlint `no-nested-ternary` | ESLint's version of the rule, which forbids any nesting |
 | Runs of blank lines to set a section apart | dprint `maxBlankLines: 24` | |
 | Imports in the order they're written | dprint's four sort settings, all `maintain` | sorting reorders module loading, which can change behavior |
-| Alignment only where whitespace carries information | each formatter's escape for one block | see Escape hatches, below |
+| Alignment only where whitespace carries information | each formatter's escape for one block, or a comment, whose text no formatter touches | see Escape hatches and Recipes, below |
 | Names, comment density, essays, `ttd` notes, result objects, guards, try and catch at the gates, factoring | no tool | the style guide's alone |
 
 What the formatters give up in JavaScript: alignment padding collapses; a one-line function body, `function test(f) { _tests.push(f) }`, becomes three lines; two statements sharing a line split onto two; a hand-laid hanging layout, like arguments lined up under the first, is rejoined; and a long import goes to one name per line, losing any grouping by line.
@@ -95,6 +95,7 @@ What the formatters give up in JavaScript: alignment padding collapses; a one-li
 		"importDeclaration.sortNamedImports": "maintain",
 		"exportDeclaration.sortNamedExports": "maintain"
 	},
+	"markup": {},
 	"malva": {
 		"quotes": "preferSingle"
 	},
@@ -104,10 +105,12 @@ What the formatters give up in JavaScript: alignment padding collapses; a one-li
 		"**/*.md",
 		"**/*.json",
 		"**/*.yaml",
-		"**/*.yml"
+		"**/*.yml",
+		"**/*.svg"
 	],
 	"plugins": [
 		"npm:@dprint/typescript@0.101.0",
+		"npm:dprint-plugin-markup@0.28.0",
 		"npm:dprint-plugin-malva@0.16.0"
 	]
 }
@@ -128,9 +131,10 @@ What the formatters give up in JavaScript: alignment padding collapses; a one-li
 | `importDeclaration.spaceSurroundingNamedImports`, `exportDeclaration.spaceSurroundingNamedExports` | true | false | `import {x}` and `export {x}` | the same rule, so every brace holding names looks alike; normalizes |
 | `module.sortImportDeclarations`, `module.sortExportDeclarations` | caseInsensitive | maintain | keeps import and export statements in written order | required: sorting reorders module loading, which can change behavior |
 | `importDeclaration.sortNamedImports`, `exportDeclaration.sortNamedExports` | caseInsensitive | maintain | keeps names inside a list in written order | maintains: the order carries meaning |
+| `markup` | | on defaults | formats Vue and HTML; ergo has neither, and the plugin is here so this file stays the one icarus uses, which has both | |
 | `malva` | | single quotes | formats CSS, the site's one stylesheet | |
 | `excludes` | node_modules, lockfiles | adds the scope | formats hand-written code only | see Scope below |
-| `plugins` | | pinned | the JavaScript and CSS plugins, at exact versions | |
+| `plugins` | | pinned | the JavaScript, markup, and CSS plugins, at exact versions | |
 
 ### Defaults that do real work
 
@@ -138,7 +142,7 @@ These stay at dprint's defaults, and the configuration depends on them.
 
 | Default | What it does | Lens |
 |---|---|---|
-| `ifStatement.useBraces: whenNotSingleLine`, and the same for `for` and `while` loops | braces any body that has to leave its line, so the misleading braceless body alone on the next line never appears | normalizes |
+| `ifStatement.useBraces: whenNotSingleLine`, and the same for `for` and `while` loops | braces a body on its own line, even a short one, and takes the braces off a body written on its `if` line, so the misleading braceless body alone on the next line never appears | normalizes |
 | `ifStatement.singleBodyPosition: maintain` | keeps `if (x) y` on one line when it was written that way and fits | maintains |
 | `commentLine.forceSpaceAfterSlashes: true` | `// note`, never `//note` | normalizes |
 | `trailingCommas: onlyMultiLine` | a trailing comma exactly when a list is broken across lines | normalizes |
@@ -153,13 +157,11 @@ Not a setting but just as important: a comment right after an opening brace, `fu
 
 Normalized, one output however it was written: indentation, width, semicolons, quotes, key quotes, arrow parentheses, brace spacing, operator position, trailing commas, comment spacing, braces on a body that leaves its line, brace and else placement, and block padding; and by the nature of a printer, one statement per line and expanded block bodies.
 
-Maintained, kept as written: import and export order and the order of names inside them; runs of up to 24 blank lines; a braceless `if` on one line; a comment after an opening brace; parentheses the author wrote, even redundant ones; braces the author wrote, or that dprint added once, even on a body that would now fit on one line; and a list, condition, or chain the author wrote across lines.
-
-That last one matters when code arrives from another formatter. Prettier, at its default of 80 columns, broke many lines that fit in 120, and dprint keeps them broken. When ergo moved to dprint, a one-time pass with `singleBodyPosition: sameLine` and `preferSingleLine: true` for arguments, arrays, parameters, objects, and conditions rejoined them first, and then the real configuration ran. Going further, to every construct, garbles some declarations like `let a, b`, so the pass stopped there.
+Maintained, kept as written: import and export order and the order of names inside them; runs of up to 24 blank lines; a braceless `if` on one line; a comment after an opening brace; parentheses the author wrote, even redundant ones; a braced body on its own lines, even one that would now fit beside its `if`; and a list, condition, or chain the author wrote across lines.
 
 ## Scope
 
-The rule: format what people and agents write by hand, and leave out what machines write and what isn't code. In ergo that's the JavaScript edition in `javascript/`, `release.js` at the root, the site's `.vitepress/config.js` and its theme, and the site's stylesheet. Left out: Markdown, which is prose; JSON, where the shared vectors in `tests/` are laid out one case to a line by hand; YAML and TOML; and everything generated, like lockfiles and build output, which dprint skips by following `.gitignore`.
+The rule: format what people and agents write by hand, and leave out what machines write and what isn't code. In ergo that's the JavaScript edition in `javascript/`, `release.js` at the root, the site's `.vitepress/config.js` and its theme, and the site's stylesheet. Left out: Markdown, which is prose; JSON, where the shared vectors in `tests/` are laid out one case to a line by hand; YAML and TOML; SVG images, like the site's disc, which the markup plugin would otherwise reformat; and everything generated, like lockfiles and build output, which dprint skips by following `.gitignore`.
 
 dprint fetches its plugins from npm itself, pinned to the exact versions in dprint.json and cached on the machine. They sit outside pnpm's lockfile, so dprint.json is where their versions live. dprint and oxlint themselves are pinned exactly in `javascript/package.json`. pnpm reports that it ignored dprint's build script; dprint runs without it.
 
@@ -180,7 +182,7 @@ dprint fetches its plugins from npm itself, pinned to the exact versions in dpri
 
 | Item | Default or ours | Why |
 |---|---|---|
-| The correctness category, 113 rules | oxlint's default | code that's outright wrong or useless, across ESLint's core rules and the unicorn, oxc, and TypeScript plugins; a few TypeScript rules need type information and stay inert on plain JavaScript |
+| The correctness category's default rules, 111 of them | oxlint's default | code that's outright wrong or useless, across ESLint's core rules and the unicorn, oxc, and TypeScript plugins; 15 of them need type information and stay inert on plain JavaScript |
 | `env: browser, node` | ours | ergo.js runs in both, and the driver, the suite, and release.js run in Node |
 | `curly: multi-line` | ours | allows a braceless body only on its `if` line; dprint already makes this hold, and the rule makes it visible where readers look for rules |
 | `no-undef` | ours; oxlint leaves it off, ESLint turns it on | flags a name used without being defined or imported; in plain JavaScript it's the nearest thing to a type checker for names |
@@ -192,7 +194,7 @@ dprint fetches its plugins from npm itself, pinned to the exact versions in dpri
 
 Two choices stand out to any reader trained on ESLint and Prettier, and they're deliberate. `eqeqeq` and `prefer-const` are off. The style guide reserves `===` and `const` as signals: `==` is the default because types are already certain where values meet, and `===` marks the rare place where type must be checked; `let` is the default, and `const` marks what must not change. Blanket `===` and `const` spend those signals down to nothing and give a false sense of safety, since `const` doesn't freeze an object and `===` doesn't fix confused types upstream. The cost is that the convention rests on the style guide and review rather than a tool, while agents write `const` and `===` by reflex.
 
-Also off: oxlint's pedantic, style, and restriction categories, which are menus rather than standards. Some of them contradict this code outright: `no-inline-comments` would ban trailing comments.
+Also off, as whole categories: pedantic, style, restriction, and nursery, which are menus rather than standards, and some of their rules contradict this code outright, like `no-inline-comments`, which would ban trailing comments. The four rules turned on above are taken from those categories by name, `curly` and `no-nested-ternary` from style, `no-var` from restriction, and `no-undef` from nursery, each because it says nothing on clean code and catches something real.
 
 ### A silent linter
 
@@ -222,6 +224,8 @@ ergo uses two. `textPieces` in ergo.test.js sits under `// dprint-ignore`, so it
 - **Keep a long template literal whole.** When a template literal runs past the width, dprint breaks it inside an interpolation, `${` at the end of one line and `} a second` on another, unless every interpolation past the width is a plain name or a member like `p.longer`. So compute the value first, `let rate = Math.round(cycles / fuzzSeconds)`, and write `${rate} a second`; or join two template literals with `+`, which dprint breaks at the `+`.
 - **Indent a `deindent` template with tabs**, like the code around it. A formatter never touches what's inside a template literal, and deindent turns each tab at the start of a line into two spaces before it takes off the indent, so the text comes out the same. It also keeps the examples the site pulls from ergo.test.js lined up, since VitePress takes leading whitespace off a snippet a character at a time.
 - **Lay out a table of values** under `// dprint-ignore`, rather than breaking the table into pieces to steer the formatter, like spreading one array into another for each row, which oxlint's `no-useless-spread` flags.
+- **Point a diagram in a comment at code** by padding the comment, never the code. A formatter leaves a comment's text alone and may move the code, so the row of carets under base62's alphabet lines up in all four editions with no escape: the alphabet sits on its declaration line, and the comment below it is padded out to the alphabet's first character.
+- **Bring code over from another formatter.** Prettier, at its default of 80 columns, breaks many lines that fit in 120, and dprint keeps a list, a condition, or a body broken once it's broken. So before the first real run, format once with `singleBodyPosition: sameLine`, and `preferSingleLine: true` for arguments, arrays, parameters, objects, and conditions, which rejoins whatever fits, and then run the real configuration. Stop there: preferring single lines everywhere splits declarations like `let a, b // note` across lines.
 - **Put a long comment on a CSS line above it.** malva counts a trailing comment toward the width, and breaks a short declaration like `margin: 24px 0;` across two lines to make room. Ruff does the same in Python, where quad-style.md moves the comment above.
 
 ## The dev loop
@@ -237,7 +241,7 @@ The commands, in each edition's directory:
 
 The JavaScript scripts run their tools from the repository's root, which is how they reach release.js and the site, and because oxlint won't take a path that climbs out with `..`.
 
-When to run them is judgment, the same as for tests. Format and lint at the end of a piece of work that changed code, in the editions it touched. Run the tests when behavior changed, and the whole suite before a commit. Nothing runs any of this automatically, no hook and no requirement in a script, because nothing needs to: a file that drifts gets caught the next time the formatter runs, and CI checks everything on every push. Editors stay plain. `.editorconfig` sets each language's indentation, which every editor reads, and `.vscode/settings.json` formats on save for anyone who uses VS Code, with dprint for JavaScript and CSS and each language's own formatter for the other three, and nothing for the files that aren't formatted.
+When to run them is judgment, the same as for tests. Format and lint at the end of a piece of work that changed code, in the editions it touched. Run the tests when behavior changed, and the whole suite before a commit. No hook runs any of this as code is written, and nothing needs to: `pnpm test` checks the format and the lint before the suite, CI checks everything on every push, and a file that drifts gets caught the next time the formatter runs. Editors stay plain, with no format on save. `.editorconfig` sets each language's indentation, which every editor reads.
 
 ## Blame
 
@@ -247,10 +251,10 @@ The commit that moved ergo from Prettier to dprint touched nearly every line of 
 
 - **`maxBlankLines` above about 30 hit a plugin bug** on icarus: "Formatting not stable", after which dprint left the file unformatted and reported an error. It fails loudly, never quietly, and 24 stays well clear.
 - **The four sort settings must stay at `maintain`.** dprint's default sorts imports and exports, which reorders module loading.
-- **dprint and its plugins are before 1.0**, so they're pinned to exact versions and upgraded deliberately: bump the version, run `pnpm fix`, check that only layout changed, commit the reformat on its own, and list it in `.git-blame-ignore-revs`. A check that only layout changed parses each file before and after, compares the trees with positions set aside, and compares every comment's text.
+- **dprint and its plugins are before 1.0**, so they're pinned to exact versions and upgraded deliberately: bump the version, run `pnpm fix`, check that only layout changed, commit the reformat on its own, and list it in `.git-blame-ignore-revs`. A check that only layout changed parses each file before and after, compares the trees with positions set aside, and compares every comment's text and place; letter-to-icarus2.md carries a script that does it.
 - **The output is dprint's own, not Prettier's.** The difference is subtle: comments stay on brace lines, written parentheses stay, and braces get added; it's proven at scale as the engine under Deno's formatter.
-- **Two comments sharing a line get split.** dprint puts a comment that follows another comment on the same line onto a line of its own, so ASCII art built from a column of `/* */` comments with words beside it comes apart, as the drawing beside hasText in ergo.js did.
-- **Braces stay.** dprint adds braces when a body has to leave its line, and never takes them off, even when the body would fit on one line again later. Take them off by hand, and dprint keeps the body on its line.
+- **Two comments sharing a line get split.** dprint puts a comment that follows another comment on the same line onto a line of its own, so ASCII art built from a column of `/* */` comments with words beside it comes apart, as the drawing beside hasText in ergo.js did, which is left as it came out.
+- **Where a body sits decides its braces.** dprint braces a body on its own line, even one short enough to fit beside its `if`, and keeps those braces when the body later shrinks. It takes the braces off a body written on its `if` line, so `if (x) { y() }` becomes `if (x) y()`. To put a braced body back on one line, write it there without braces, and dprint keeps it.
 
 ## Beyond JavaScript
 

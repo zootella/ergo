@@ -17,6 +17,7 @@
 		"importDeclaration.sortNamedImports": "maintain",
 		"exportDeclaration.sortNamedExports": "maintain"
 	},
+	"markup": {},
 	"malva": {
 		"quotes": "preferSingle"
 	},
@@ -26,10 +27,12 @@
 		"**/*.md",
 		"**/*.json",
 		"**/*.yaml",
-		"**/*.yml"
+		"**/*.yml",
+		"**/*.svg"
 	],
 	"plugins": [
 		"npm:@dprint/typescript@0.101.0",
+		"npm:dprint-plugin-markup@0.28.0",
 		"npm:dprint-plugin-malva@0.16.0"
 	]
 }

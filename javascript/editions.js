@@ -38,7 +38,9 @@ export function chosenEditions() {
 export async function startEditions(chosen = chosenEditions()) {
 	let editions = {}
 	if (chosen.includes('javascript')) editions.javascript = edition((name, args) => call(name, args), () => {})
-	for (let [name, c] of Object.entries(commands)) if (chosen.includes(name)) editions[name] = await startDriver(name, c)
+	for (let [name, c] of Object.entries(commands)) {
+		if (chosen.includes(name)) editions[name] = await startDriver(name, c)
+	}
 	return editions
 }
 // stop the driver processes

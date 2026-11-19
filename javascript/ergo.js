@@ -906,9 +906,9 @@ Why so many different encoding formats? base16 is good because it's simple, stan
 */
 
 const alphabet62Stream = '1023456789ABCDEFIGHJKLMNOPQRSTUVjWXYZabcdefghkmnlopqrstuvwxyzi' // narrow characters in popular spots, for data
-/* ^               ^               ^               ^            ^
-   1               I               j               l            i  moved characters
-   0               16              32              48           61  to these indices
+/*                        ^               ^               ^               ^            ^
+                          1               I               j               l            i  moved characters
+                          0               16              32              48           61  to these indices
 
 Encoding random short data, some characters appear more frequently than others.
 The last character, at index 61, is the most common.

@@ -82,7 +82,7 @@ One repository, github.com/zootella/ergo, holding all four editions:
 ergo/
 	CLAUDE.md  concept.md  construction.md  format-and-lint.md  ideas.md  quad-style.md  README.md  LICENSE
 	release.js  package.json       one command that releases all four editions at a new version, run as pnpm release
-	.editorconfig  .vscode/        indentation per language, format on save, recommended extensions
+	.editorconfig                  indentation per language, which every editor reads
 	dprint.json  .oxlintrc.json    the formatter and linter configuration, for the JavaScript edition, release.js, and the site
 	.git-blame-ignore-revs         the commits that changed only layout, which blame looks past
 	.github/workflows/             test.yml runs all four editions and the suite; publish.yml releases on a version tag; docs.yml deploys the site
@@ -196,7 +196,7 @@ Distribution name and import name are separate things in Python. The parallel to
 
 The `tests/` directory holds the vector reader under pytest, declared as a dev dependency group, and nothing else. pytest is configured in pyproject.toml to also run doctests in `src`, which is where the Python examples live, and to put `src` on the path so the reader imports the package without an install. The driver is `zootella.ergo.driver`, run with `python -m`; it holds the dispatch table too, and the reader imports it from there.
 
-When the edition can't continue it raises Python's own exceptions, a ValueError or a TypeError, never a custom type, and the vector reader expects any exception for a throws case, since which one is the edition's business. Ruff's default rule set is broader than it once was and includes flake8-bugbear and blind-except, so the two deliberately blind spots, `except Exception` at the driver's top gate and `pytest.raises(Exception)` in the reader, each carry a `# noqa` with the reason beside it. A namespace of constants is a class with upper-case attributes, `Size.KB` and `Time.HOUR`, the familiar shape for a group of named numbers.
+When the edition can't continue it raises Python's own exceptions, a ValueError or a TypeError, never a custom type, and the vector reader expects any exception for a throws case, since which one is the edition's business. Ruff's default rule set is broader than it once was and includes flake8-bugbear and blind-except, so the one deliberately blind catch, `except Exception` at the driver's top gate, carries a `# noqa` with the reason beside it. The reader's `pytest.raises(Exception)`, which expects any exception for a throws case, needs none. A namespace of constants is a class with upper-case attributes, `Size.KB` and `Time.HOUR`, the familiar shape for a group of named numbers.
 
 The standard library covers SHA-1, SHA-256, HMAC, PBKDF2, and secure random through `hashlib`, `hmac`, and `secrets`, plus `base64`, `struct`, and `json`. It has no AES, no RSA, and no elliptic curves. Those come from the `cryptography` package, which is the universally used and trusted choice in Python and meets the dependency standard in concept.md. It has no BLAKE3 either, which CPython declined to add in 2022, so BLAKE3 comes from the `blake3` package, the official Python binding to the official Rust implementation, and the encodings and Normalization Form C are all the standard library's, with prebuilt wheels for every common platform, Python 3.14 included.
 
